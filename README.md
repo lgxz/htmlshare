@@ -25,6 +25,9 @@ ADMIN_TOKEN=change-this-different-long-random-token
 HTMLSHARE_MAX_FILE_BYTES=10485760
 HTMLSHARE_EVENT_LOG=/data/events.jsonl
 HTMLSHARE_LOG_UNMATCHED=0
+HTMLSHARE_LOG_DISCONNECTED=0
+HTMLSHARE_MAX_PENDING_REQUESTS=100
+HTMLSHARE_MAX_PENDING_PER_SHARE=10
 ```
 
 Start the relay:
@@ -48,6 +51,13 @@ docker compose exec htmlshare tail -f /data/events.jsonl
 The event recorder is isolated behind `record(event)` in `src/index.js`, so the JSONL storage can be replaced by SQLite later without changing request/session handling.
 
 Unmatched scanner traffic such as `/wp-login.php` or `/.env` is not logged by default. Set `HTMLSHARE_LOG_UNMATCHED=1` to include those 404s for diagnostics.
+
+Requests for disconnected or random `/s/<session-id>/...` URLs are not logged by default. Set `HTMLSHARE_LOG_DISCONNECTED=1` to include those 410s for diagnostics.
+
+The relay limits in-flight browser requests before forwarding them to a sharing client:
+
+- `HTMLSHARE_MAX_PENDING_REQUESTS`: global in-flight request limit.
+- `HTMLSHARE_MAX_PENDING_PER_SHARE`: per-share in-flight request limit.
 
 Admin status:
 

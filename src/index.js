@@ -12,7 +12,10 @@ const MAX_FILE_BYTES = Number(process.env.HTMLSHARE_MAX_FILE_BYTES || 10 * 1024 
 const DEFAULT_PORT = Number(process.env.PORT || 8080);
 const DEFAULT_EVENT_LOG = process.env.HTMLSHARE_EVENT_LOG || path.resolve("data/events.jsonl");
 const LOG_UNMATCHED = process.env.HTMLSHARE_LOG_UNMATCHED === "1";
+const LOG_DISCONNECTED = process.env.HTMLSHARE_LOG_DISCONNECTED === "1";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+const MAX_PENDING_REQUESTS = positiveInt(process.env.HTMLSHARE_MAX_PENDING_REQUESTS, 100);
+const MAX_PENDING_PER_SHARE = positiveInt(process.env.HTMLSHARE_MAX_PENDING_PER_SHARE, 10);
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -49,17 +52,25 @@ function usage() {
   htmlshare client --server ws://localhost:8080/tunnel --file /path/to/file.html
 
 Environment:
-  SHARE_TOKEN              Optional token required by both server and client
+  SHARE_TOKEN              Required token for server mode and authenticated clients
   PUBLIC_BASE_URL          Public base URL printed by the client, e.g. https://share.example.com
   HTMLSHARE_MAX_FILE_BYTES Max single file size, default 10MB
   HTMLSHARE_EVENT_LOG      Server JSONL event log path
   HTMLSHARE_LOG_UNMATCHED  Set to 1 to log non-share-path scanner traffic
+  HTMLSHARE_LOG_DISCONNECTED Set to 1 to log requests for disconnected /s/... URLs
+  HTMLSHARE_MAX_PENDING_REQUESTS Global in-flight browser request limit, default 100
+  HTMLSHARE_MAX_PENDING_PER_SHARE Per-share in-flight browser request limit, default 10
   ADMIN_TOKEN              Optional bearer token for /admin/status`);
 }
 
 function runServer() {
   const port = readOption("--port") ? Number(readOption("--port")) : DEFAULT_PORT;
   const shareToken = process.env.SHARE_TOKEN || "";
+  if (!shareToken) {
+    console.error("SHARE_TOKEN is required in server mode.");
+    process.exit(78);
+  }
+
   const events = createEventRecorder(DEFAULT_EVENT_LOG);
   const sessions = new Map();
   const pending = new Map();
@@ -139,7 +150,7 @@ function runServer() {
       if (!session || session.ws.readyState !== WebSocket.OPEN) {
         res.writeHead(410, { "content-type": "text/plain; charset=utf-8" });
         res.end("This share is not connected.\n");
-        recordRequest(sessionId, parsed, 410, 0, "share_not_connected");
+        if (LOG_DISCONNECTED) recordRequest(sessionId, parsed, 410, 0, "share_not_connected");
         return;
       }
 
@@ -150,8 +161,15 @@ function runServer() {
         return;
       }
 
+      if (pending.size >= MAX_PENDING_REQUESTS || pendingCountForSession(pending, sessionId) >= MAX_PENDING_PER_SHARE) {
+        res.writeHead(429, { "content-type": "text/plain; charset=utf-8", "retry-after": "5" });
+        res.end("Too many in-flight requests.\n");
+        recordRequest(sessionId, parsed, 429, 0, "too_many_pending_requests");
+        return;
+      }
+
       const id = randomId(12);
-      const response = waitForResponse(pending, id, 15000);
+      const response = waitForResponse(pending, id, sessionId, 15000);
       session.ws.send(JSON.stringify({
         type: "request",
         id,
@@ -210,13 +228,26 @@ function runServer() {
       }
 
       if (message.type === "register") {
-        if (shareToken && message.token !== shareToken) {
+        if (message.token !== shareToken) {
           stats.totals.shareRejections += 1;
           events.record({ type: "share_rejected", reason: "bad_token", ip: connectionIp, userAgent });
           ws.close(1008, "Bad token");
           return;
         }
         registeredSession = message.sessionId || randomId(8);
+        if (sessions.has(registeredSession)) {
+          stats.totals.shareRejections += 1;
+          events.record({
+            type: "share_rejected",
+            reason: "duplicate_session",
+            sessionId: registeredSession,
+            ip: connectionIp,
+            userAgent
+          });
+          ws.close(1008, "Duplicate session");
+          return;
+        }
+
         const share = stats.addShare({
           sessionId: registeredSession,
           connectedAt,
@@ -237,7 +268,8 @@ function runServer() {
       }
 
       if (message.type === "response" && pending.has(message.id)) {
-        pending.get(message.id)(message);
+        const entry = pending.get(message.id);
+        entry.resolve(message);
         pending.delete(message.id);
       }
     });
@@ -380,24 +412,40 @@ async function handleFileRequest(rootDir, requestPath) {
   }
 }
 
-function waitForResponse(pending, id, timeoutMs) {
+function waitForResponse(pending, id, sessionId, timeoutMs) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);
       reject(new Error("Shared client did not respond in time"));
     }, timeoutMs);
 
-    pending.set(id, (message) => {
-      clearTimeout(timer);
-      resolve(message);
+    pending.set(id, {
+      sessionId,
+      resolve(message) {
+        clearTimeout(timer);
+        resolve(message);
+      }
     });
   });
+}
+
+function pendingCountForSession(pending, sessionId) {
+  let count = 0;
+  for (const entry of pending.values()) {
+    if (entry.sessionId === sessionId) count += 1;
+  }
+  return count;
 }
 
 function readOption(name) {
   const index = process.argv.indexOf(name);
   if (index === -1) return "";
   return process.argv[index + 1] || "";
+}
+
+function positiveInt(value, fallback) {
+  const parsed = Number.parseInt(value || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function createEventRecorder(filePath) {
