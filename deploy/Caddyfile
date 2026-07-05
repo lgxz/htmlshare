@@ -1,0 +1,3 @@
+{$SHARE_DOMAIN} {
+	reverse_proxy htmlshare:8080
+}
