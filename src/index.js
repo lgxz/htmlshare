@@ -172,13 +172,14 @@ function runServer() {
         "content-type": message.contentType || "application/octet-stream",
         "cache-control": "no-store"
       };
-      if (typeof message.size === "number") headers["content-length"] = String(message.size);
+      const body = req.method === "HEAD" ? null : decodeResponseBody(message);
+      if (body) headers["content-length"] = String(body.length);
+      else if (typeof message.size === "number" && message.size <= MAX_FILE_BYTES) headers["content-length"] = String(message.size);
       res.writeHead(message.status || 200, headers);
       if (req.method === "HEAD") {
         res.end();
         recordRequest(sessionId, parsed, message.status || 200, 0);
       } else {
-        const body = Buffer.from(message.body || "", "base64");
         res.end(body);
         recordRequest(sessionId, parsed, message.status || 200, body.length);
       }
@@ -259,6 +260,33 @@ function runServer() {
     console.log(`htmlshare server listening on :${port}`);
     events.record({ type: "server_started", port, eventLog: DEFAULT_EVENT_LOG });
   });
+}
+
+function decodeResponseBody(message) {
+  const encoded = message.body || "";
+  if (typeof encoded !== "string") {
+    throw new Error("Shared client returned an invalid response body");
+  }
+
+  if (typeof message.size === "number" && message.size > MAX_FILE_BYTES) {
+    throw new Error("Shared client response is too large");
+  }
+
+  const maxBase64Length = Math.ceil(MAX_FILE_BYTES / 3) * 4 + 4;
+  if (encoded.length > maxBase64Length) {
+    throw new Error("Shared client response is too large");
+  }
+
+  const body = Buffer.from(encoded, "base64");
+  if (body.length > MAX_FILE_BYTES) {
+    throw new Error("Shared client response is too large");
+  }
+
+  if (typeof message.size === "number" && body.length !== message.size) {
+    throw new Error("Shared client response size mismatch");
+  }
+
+  return body;
 }
 
 async function runClient() {
