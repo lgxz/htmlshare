@@ -99,7 +99,13 @@ When a browser requests a shared file, the relay sends this message to the conne
   "type": "request",
   "id": "request-id",
   "method": "GET",
-  "path": "/travel-guide.html"
+  "path": "/travel-guide.html",
+  "visitor": {
+    "ip": "203.0.113.10",
+    "userAgent": "Mozilla/5.0 ...",
+    "referer": "https://example.com/",
+    "at": "2026-07-06T10:20:30.000Z"
+  }
 }
 ```
 
@@ -108,6 +114,11 @@ Fields:
 - `id`: unique request id. Echo this in the response.
 - `method`: currently `GET` or `HEAD`.
 - `path`: URL path and optional query string, rooted at the shared directory.
+- `visitor`: best-effort browser visitor metadata supplied by the relay.
+- `visitor.ip`: browser client IP after trusted reverse-proxy headers.
+- `visitor.userAgent`: browser `User-Agent` header, or an empty string.
+- `visitor.referer`: browser `Referer` header, or an empty string.
+- `visitor.at`: relay receive time in ISO 8601 format.
 
 ## Response Message
 

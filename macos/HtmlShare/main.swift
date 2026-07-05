@@ -57,7 +57,25 @@ enum ShareError: Error, LocalizedError {
 struct IncomingMessage: Decodable {
     let type: String
     let id: String?
+    let method: String?
     let path: String?
+    let visitor: VisitorInfo?
+}
+
+struct VisitorInfo: Decodable {
+    let ip: String?
+    let userAgent: String?
+    let referer: String?
+    let at: String?
+}
+
+struct VisitRecord {
+    let at: Date
+    let ip: String
+    let method: String
+    let path: String
+    let status: Int
+    let bytes: Int
 }
 
 final class ShareClient: NSObject, URLSessionWebSocketDelegate {
@@ -73,6 +91,13 @@ final class ShareClient: NSObject, URLSessionWebSocketDelegate {
     var onRegistered: ((String) -> Void)?
     var onStopped: (() -> Void)?
     var onError: ((String) -> Void)?
+    var onVisit: ((VisitRecord) -> Void)?
+
+    private static let isoDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     init(config: HtmlShareConfig, fileURL: URL) throws {
         self.config = config
@@ -159,9 +184,26 @@ final class ShareClient: NSObject, URLSessionWebSocketDelegate {
         }
 
         if incoming.type == "request", let id = incoming.id {
-            let response = responseForRequest(id: id, path: incoming.path ?? "/")
+            let requestPath = incoming.path ?? "/"
+            let response = responseForRequest(id: id, path: requestPath)
             sendJSON(response)
+            let record = visitRecord(for: incoming, response: response, path: requestPath)
+            DispatchQueue.main.async {
+                self.onVisit?(record)
+            }
         }
+    }
+
+    private func visitRecord(for incoming: IncomingMessage, response: [String: Any], path: String) -> VisitRecord {
+        let at = incoming.visitor?.at.flatMap { ShareClient.isoDateFormatter.date(from: $0) } ?? Date()
+        return VisitRecord(
+            at: at,
+            ip: incoming.visitor?.ip?.isEmpty == false ? incoming.visitor?.ip ?? "-" : "-",
+            method: incoming.method ?? "GET",
+            path: path,
+            status: response["status"] as? Int ?? 0,
+            bytes: response["size"] as? Int ?? 0
+        )
     }
 
     private func responseForRequest(id: String, path requestPath: String) -> [String: Any] {
@@ -260,12 +302,14 @@ final class ShareClient: NSObject, URLSessionWebSocketDelegate {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private var window: NSWindow!
     private var statusLabel: NSTextField!
     private var fileLabel: NSTextField!
     private var urlField: NSTextField!
     private var errorLabel: NSTextField!
+    private var visitsLabel: NSTextField!
+    private var visitsTable: NSTableView!
     private var chooseButton: NSButton!
     private var copyButton: NSButton!
     private var openButton: NSButton!
@@ -273,6 +317,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var configLabel: NSTextField!
     private var shareClient: ShareClient?
     private var currentURL = ""
+    private var visits: [VisitRecord] = []
+    private let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildWindow()
@@ -292,7 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func buildWindow() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 260),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 430),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -308,21 +358,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.contentView = content
 
         let outerX: CGFloat = 24
-        let outerWidth: CGFloat = 512
+        let outerWidth: CGFloat = 572
         let innerX: CGFloat = outerX + 34
         let innerWidth: CGFloat = outerWidth - 68
 
         statusLabel = statusText("Ready")
-        statusLabel.frame = NSRect(x: outerX, y: 210, width: 160, height: 24)
+        statusLabel.frame = NSRect(x: outerX, y: 378, width: 160, height: 24)
         content.addSubview(statusLabel)
 
         configLabel = label(configSummary(), size: 12, weight: .regular)
         configLabel.textColor = .secondaryLabelColor
         configLabel.alignment = .right
-        configLabel.frame = NSRect(x: 252, y: 211, width: outerX + outerWidth - 252, height: 20)
+        configLabel.frame = NSRect(x: 282, y: 379, width: outerX + outerWidth - 282, height: 20)
         content.addSubview(configLabel)
 
-        let panel = NSView(frame: NSRect(x: outerX, y: 58, width: outerWidth, height: 134))
+        let panel = NSView(frame: NSRect(x: outerX, y: 226, width: outerWidth, height: 134))
         panel.wantsLayer = true
         panel.layer?.cornerRadius = 8
         panel.layer?.borderWidth = 1
@@ -333,10 +383,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         fileLabel = label("No file selected", size: 13, weight: .medium)
         fileLabel.alignment = .left
         fileLabel.textColor = .secondaryLabelColor
-        fileLabel.frame = NSRect(x: innerX, y: 158, width: innerWidth, height: 20)
+        fileLabel.frame = NSRect(x: innerX, y: 326, width: innerWidth, height: 20)
         content.addSubview(fileLabel)
 
-        urlField = NSTextField(frame: NSRect(x: innerX, y: 110, width: innerWidth, height: 34))
+        urlField = NSTextField(frame: NSRect(x: innerX, y: 278, width: innerWidth, height: 34))
         urlField.isEditable = false
         urlField.isSelectable = true
         urlField.stringValue = "No active share"
@@ -346,32 +396,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         chooseButton = button("Choose File", action: #selector(chooseFile))
         chooseButton.bezelColor = NSColor.systemTeal
-        chooseButton.frame = NSRect(x: innerX, y: 72, width: 122, height: 30)
+        chooseButton.frame = NSRect(x: innerX, y: 240, width: 122, height: 30)
         content.addSubview(chooseButton)
 
         copyButton = button("Copy Link", action: #selector(copyLink))
-        copyButton.frame = NSRect(x: innerX + 132, y: 72, width: 108, height: 30)
+        copyButton.frame = NSRect(x: innerX + 132, y: 240, width: 108, height: 30)
         copyButton.isEnabled = false
         content.addSubview(copyButton)
 
         openButton = button("Open Link", action: #selector(openLink))
-        openButton.frame = NSRect(x: innerX + 250, y: 72, width: 108, height: 30)
+        openButton.frame = NSRect(x: innerX + 250, y: 240, width: 108, height: 30)
         openButton.isEnabled = false
         content.addSubview(openButton)
 
         stopButton = button("Stop", action: #selector(stopButtonPressed))
-        stopButton.frame = NSRect(x: innerX + 368, y: 72, width: 76, height: 30)
+        stopButton.frame = NSRect(x: innerX + 368, y: 240, width: 76, height: 30)
         stopButton.isEnabled = false
         content.addSubview(stopButton)
+
+        visitsLabel = label("Visits", size: 13, weight: .medium)
+        visitsLabel.textColor = .secondaryLabelColor
+        visitsLabel.frame = NSRect(x: outerX, y: 190, width: outerWidth, height: 20)
+        content.addSubview(visitsLabel)
+
+        let scrollView = NSScrollView(frame: NSRect(x: outerX, y: 46, width: outerWidth, height: 136))
+        scrollView.hasVerticalScroller = true
+        scrollView.borderType = .bezelBorder
+        scrollView.autoresizingMask = [.width]
+
+        visitsTable = NSTableView(frame: scrollView.bounds)
+        visitsTable.headerView = NSTableHeaderView()
+        visitsTable.delegate = self
+        visitsTable.dataSource = self
+        visitsTable.rowHeight = 24
+        visitsTable.usesAlternatingRowBackgroundColors = true
+        visitsTable.allowsColumnReordering = false
+        visitsTable.allowsColumnResizing = true
+        addColumn(id: "time", title: "Time", width: 72)
+        addColumn(id: "ip", title: "IP", width: 120)
+        addColumn(id: "path", title: "Path", width: 245)
+        addColumn(id: "status", title: "Status", width: 58)
+        addColumn(id: "bytes", title: "Bytes", width: 60)
+        scrollView.documentView = visitsTable
+        content.addSubview(scrollView)
 
         errorLabel = label("", size: 12, weight: .regular)
         errorLabel.textColor = .systemRed
         errorLabel.alignment = .left
-        errorLabel.frame = NSRect(x: outerX, y: 24, width: outerWidth, height: 22)
+        errorLabel.frame = NSRect(x: outerX, y: 18, width: outerWidth, height: 20)
         content.addSubview(errorLabel)
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func addColumn(id: String, title: String, width: CGFloat) {
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
+        column.title = title
+        column.width = width
+        column.minWidth = 48
+        visitsTable.addTableColumn(column)
     }
 
     @objc private func chooseFile() {
@@ -405,6 +489,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func startSharing(_ url: URL) {
         stopSharing()
         errorLabel.stringValue = ""
+        visits.removeAll()
+        visitsTable.reloadData()
+        updateVisitsLabel()
         fileLabel.stringValue = url.lastPathComponent
         fileLabel.toolTip = url.path
         urlField.stringValue = "Connecting..."
@@ -433,6 +520,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             client.onError = { [weak self] message in
                 self?.errorLabel.stringValue = message
             }
+            client.onVisit = { [weak self] visit in
+                self?.appendVisit(visit)
+            }
             self.shareClient = client
             try client.start()
         } catch {
@@ -459,6 +549,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !keepError {
             errorLabel.stringValue = ""
         }
+    }
+
+    private func appendVisit(_ visit: VisitRecord) {
+        visits.insert(visit, at: 0)
+        if visits.count > 100 {
+            visits.removeLast(visits.count - 100)
+        }
+        visitsTable.reloadData()
+        updateVisitsLabel()
+    }
+
+    private func updateVisitsLabel() {
+        visitsLabel.stringValue = visits.isEmpty ? "Visits" : "Visits (\(visits.count))"
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        visits.count
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < visits.count, let identifier = tableColumn?.identifier else { return nil }
+        let record = visits[row]
+        let value: String
+        switch identifier.rawValue {
+        case "time":
+            value = timeFormatter.string(from: record.at)
+        case "ip":
+            value = record.ip
+        case "path":
+            value = record.path
+        case "status":
+            value = String(record.status)
+        case "bytes":
+            value = record.bytes > 0 ? String(record.bytes) : "-"
+        default:
+            value = ""
+        }
+
+        let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTextField ?? NSTextField(labelWithString: "")
+        cell.identifier = identifier
+        cell.stringValue = value
+        cell.font = NSFont.systemFont(ofSize: 12)
+        cell.lineBreakMode = .byTruncatingMiddle
+        cell.textColor = textColor(for: record, column: identifier.rawValue)
+        return cell
+    }
+
+    private func textColor(for record: VisitRecord, column: String) -> NSColor {
+        guard column == "status" else { return .labelColor }
+        if record.status >= 500 { return .systemRed }
+        if record.status >= 400 { return .systemOrange }
+        if record.status >= 300 { return .secondaryLabelColor }
+        return .labelColor
     }
 
     private func configSummary() -> String {

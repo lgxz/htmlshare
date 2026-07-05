@@ -174,7 +174,13 @@ function runServer() {
         type: "request",
         id,
         method: req.method,
-        path: `/${rawPath}${parsed.search}`
+        path: `/${rawPath}${parsed.search}`,
+        visitor: {
+          ip: clientIp(req),
+          userAgent: req.headers["user-agent"] || "",
+          referer: req.headers.referer || "",
+          at: new Date().toISOString()
+        }
       }));
 
       const message = await response;
