@@ -74,8 +74,95 @@ struct VisitRecord {
     let ip: String
     let method: String
     let path: String
+    let browser: String
+    let os: String
     let status: Int
     let bytes: Int
+}
+
+struct UserAgentInfo {
+    let browser: String
+    let os: String
+
+    static func parse(_ userAgent: String) -> UserAgentInfo {
+        let browser = parseBrowser(userAgent)
+        let os = parseOS(userAgent)
+        return UserAgentInfo(browser: browser, os: os)
+    }
+
+    private static func parseBrowser(_ userAgent: String) -> String {
+        if let version = version(after: "Edg/", in: userAgent) {
+            return "Edge \(version)"
+        }
+        if let version = version(after: "OPR/", in: userAgent) {
+            return "Opera \(version)"
+        }
+        if let version = version(after: "CriOS/", in: userAgent) {
+            return "Chrome iOS \(version)"
+        }
+        if let version = version(after: "Chrome/", in: userAgent), !userAgent.contains("Chromium/") {
+            return "Chrome \(version)"
+        }
+        if let version = version(after: "Firefox/", in: userAgent) {
+            return "Firefox \(version)"
+        }
+        if let version = version(after: "Version/", in: userAgent), userAgent.contains("Safari/"), !userAgent.contains("Chrome/") {
+            return "Safari \(version)"
+        }
+        if let version = version(after: "Safari/", in: userAgent) {
+            return "Safari \(version)"
+        }
+        return userAgent.isEmpty ? "-" : "Unknown"
+    }
+
+    private static func parseOS(_ userAgent: String) -> String {
+        if userAgent.contains("Windows NT 10.0") { return "Windows 10/11" }
+        if userAgent.contains("Windows NT 6.3") { return "Windows 8.1" }
+        if userAgent.contains("Windows NT 6.2") { return "Windows 8" }
+        if userAgent.contains("Windows NT 6.1") { return "Windows 7" }
+        if userAgent.contains("Mac OS X") {
+            if let value = value(after: "Mac OS X ", in: userAgent) {
+                return "macOS \(value.replacingOccurrences(of: "_", with: "."))"
+            }
+            return "macOS"
+        }
+        if userAgent.contains("iPhone OS") {
+            if let value = value(after: "iPhone OS ", in: userAgent) {
+                return "iOS \(value.replacingOccurrences(of: "_", with: "."))"
+            }
+            return "iOS"
+        }
+        if userAgent.contains("CPU OS") {
+            if let value = value(after: "CPU OS ", in: userAgent) {
+                return "iPadOS \(value.replacingOccurrences(of: "_", with: "."))"
+            }
+            return "iPadOS"
+        }
+        if userAgent.contains("Android") {
+            if let value = value(after: "Android ", in: userAgent) {
+                return "Android \(value)"
+            }
+            return "Android"
+        }
+        if userAgent.contains("Linux") { return "Linux" }
+        return userAgent.isEmpty ? "-" : "Unknown"
+    }
+
+    private static func version(after marker: String, in userAgent: String) -> String? {
+        value(after: marker, in: userAgent).map { value in
+            let majorMinor = value.split(separator: ".").prefix(2).joined(separator: ".")
+            return majorMinor.isEmpty ? value : majorMinor
+        }
+    }
+
+    private static func value(after marker: String, in userAgent: String) -> String? {
+        guard let range = userAgent.range(of: marker) else { return nil }
+        let rest = userAgent[range.upperBound...]
+        let value = rest.prefix { character in
+            !character.isWhitespace && character != ";" && character != ")"
+        }
+        return value.isEmpty ? nil : String(value)
+    }
 }
 
 final class ShareClient: NSObject, URLSessionWebSocketDelegate {
@@ -196,11 +283,15 @@ final class ShareClient: NSObject, URLSessionWebSocketDelegate {
 
     private func visitRecord(for incoming: IncomingMessage, response: [String: Any], path: String) -> VisitRecord {
         let at = incoming.visitor?.at.flatMap { ShareClient.isoDateFormatter.date(from: $0) } ?? Date()
+        let userAgent = incoming.visitor?.userAgent ?? ""
+        let userAgentInfo = UserAgentInfo.parse(userAgent)
         return VisitRecord(
             at: at,
             ip: incoming.visitor?.ip?.isEmpty == false ? incoming.visitor?.ip ?? "-" : "-",
             method: incoming.method ?? "GET",
             path: path,
+            browser: userAgentInfo.browser,
+            os: userAgentInfo.os,
             status: response["status"] as? Int ?? 0,
             bytes: response["size"] as? Int ?? 0
         )
@@ -342,7 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
 
     private func buildWindow() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 430),
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 430),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -358,7 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         window.contentView = content
 
         let outerX: CGFloat = 24
-        let outerWidth: CGFloat = 572
+        let outerWidth: CGFloat = 712
         let innerX: CGFloat = outerX + 34
         let innerWidth: CGFloat = outerWidth - 68
 
@@ -369,7 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         configLabel = label(configSummary(), size: 12, weight: .regular)
         configLabel.textColor = .secondaryLabelColor
         configLabel.alignment = .right
-        configLabel.frame = NSRect(x: 282, y: 379, width: outerX + outerWidth - 282, height: 20)
+        configLabel.frame = NSRect(x: 422, y: 379, width: outerX + outerWidth - 422, height: 20)
         content.addSubview(configLabel)
 
         let panel = NSView(frame: NSRect(x: outerX, y: 226, width: outerWidth, height: 134))
@@ -433,8 +524,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         visitsTable.allowsColumnReordering = false
         visitsTable.allowsColumnResizing = true
         addColumn(id: "time", title: "Time", width: 72)
-        addColumn(id: "ip", title: "IP", width: 120)
-        addColumn(id: "path", title: "Path", width: 245)
+        addColumn(id: "ip", title: "IP", width: 116)
+        addColumn(id: "browser", title: "Browser", width: 118)
+        addColumn(id: "os", title: "OS", width: 118)
+        addColumn(id: "path", title: "Path", width: 186)
         addColumn(id: "status", title: "Status", width: 58)
         addColumn(id: "bytes", title: "Bytes", width: 60)
         scrollView.documentView = visitsTable
@@ -577,6 +670,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
             value = timeFormatter.string(from: record.at)
         case "ip":
             value = record.ip
+        case "browser":
+            value = record.browser
+        case "os":
+            value = record.os
         case "path":
             value = record.path
         case "status":

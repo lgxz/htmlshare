@@ -153,7 +153,7 @@ Open the printed URL.
 - Paths cannot escape that directory.
 - Default max single-file response is 10MB. Override with `HTMLSHARE_MAX_FILE_BYTES`.
 - The app prefers `~/.htmlshare/client.env` at runtime. A bundled `client.env` is only a fallback.
-- The native macOS app shows the latest in-memory visitor records for the active share.
+- The native macOS app shows the latest in-memory visitor records, including IP, browser, and OS.
 - To implement another platform client, see `docs/client-protocol.md`.
 - Server events are written to `HTMLSHARE_EVENT_LOG` as JSONL by default.
 - Non-share-path scanner traffic is ignored unless `HTMLSHARE_LOG_UNMATCHED=1`.
