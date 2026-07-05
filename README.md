@@ -122,6 +122,30 @@ cd dist
 ditto -c -k --sequesterRsrc --keepParent HtmlShareSwift.app HtmlShareSwift-macos-arm64.zip
 ```
 
+## Go CLI
+
+The Go CLI uses the same `~/.htmlshare/client.env` config as the macOS app and prints each visit with IP, browser, OS, status, bytes, and path.
+
+Run from source:
+
+```bash
+go run ./cmd/htmlshare-go --file /path/to/file.html
+```
+
+Build a local binary:
+
+```bash
+go build -o dist/htmlshare-go ./cmd/htmlshare-go
+```
+
+Cross-compile examples:
+
+```bash
+GOOS=windows GOARCH=amd64 go build -o dist/htmlshare-go-windows-amd64.exe ./cmd/htmlshare-go
+GOOS=linux GOARCH=amd64 go build -o dist/htmlshare-go-linux-amd64 ./cmd/htmlshare-go
+GOOS=darwin GOARCH=arm64 go build -o dist/htmlshare-go-macos-arm64 ./cmd/htmlshare-go
+```
+
 ## Use
 
 1. Open `HtmlShareSwift.app`.
@@ -145,6 +169,12 @@ Client:
 PUBLIC_BASE_URL=http://localhost:8080 npm run client -- --server ws://localhost:8080/tunnel --file /path/to/file.html
 ```
 
+Go client:
+
+```bash
+HTMLSHARE_SERVER=ws://localhost:8080/tunnel PUBLIC_BASE_URL=http://localhost:8080 SHARE_TOKEN=change-this-long-random-token go run ./cmd/htmlshare-go --file /path/to/file.html
+```
+
 Open the printed URL.
 
 ## Notes
@@ -153,7 +183,7 @@ Open the printed URL.
 - Paths cannot escape that directory.
 - Default max single-file response is 10MB. Override with `HTMLSHARE_MAX_FILE_BYTES`.
 - The app prefers `~/.htmlshare/client.env` at runtime. A bundled `client.env` is only a fallback.
-- The native macOS app shows the latest in-memory visitor records, including IP, browser, and OS.
+- The native macOS app and Go CLI show visitor records, including IP, browser, and OS.
 - To implement another platform client, see `docs/client-protocol.md`.
 - Server events are written to `HTMLSHARE_EVENT_LOG` as JSONL by default.
 - Non-share-path scanner traffic is ignored unless `HTMLSHARE_LOG_UNMATCHED=1`.
