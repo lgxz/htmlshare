@@ -11,6 +11,7 @@ import { WebSocket, WebSocketServer } from "ws";
 const MAX_FILE_BYTES = Number(process.env.HTMLSHARE_MAX_FILE_BYTES || 10 * 1024 * 1024);
 const DEFAULT_PORT = Number(process.env.PORT || 8080);
 const DEFAULT_EVENT_LOG = process.env.HTMLSHARE_EVENT_LOG || path.resolve("data/events.jsonl");
+const LOG_UNMATCHED = process.env.HTMLSHARE_LOG_UNMATCHED === "1";
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -50,7 +51,8 @@ Environment:
   SHARE_TOKEN              Optional token required by both server and client
   PUBLIC_BASE_URL          Public base URL printed by the client, e.g. https://share.example.com
   HTMLSHARE_MAX_FILE_BYTES Max single file size, default 10MB
-  HTMLSHARE_EVENT_LOG      Server JSONL event log path, default /data/events.jsonl`);
+  HTMLSHARE_EVENT_LOG      Server JSONL event log path
+  HTMLSHARE_LOG_UNMATCHED  Set to 1 to log non-share-path scanner traffic`);
 }
 
 function runServer() {
@@ -94,15 +96,17 @@ function runServer() {
       if (!match) {
         res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
         res.end("Not found\n");
-        events.record({
-          type: "request_unmatched",
-          method: req.method,
-          path: parsed.pathname,
-          status: 404,
-          durationMs: Date.now() - startedAt,
-          ip: clientIp(req),
-          userAgent: req.headers["user-agent"] || ""
-        });
+        if (LOG_UNMATCHED) {
+          events.record({
+            type: "request_unmatched",
+            method: req.method,
+            path: parsed.pathname,
+            status: 404,
+            durationMs: Date.now() - startedAt,
+            ip: clientIp(req),
+            userAgent: req.headers["user-agent"] || ""
+          });
+        }
         return;
       }
 

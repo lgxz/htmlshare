@@ -23,6 +23,7 @@ SHARE_DOMAIN=share.example.com
 SHARE_TOKEN=change-this-long-random-token
 HTMLSHARE_MAX_FILE_BYTES=10485760
 HTMLSHARE_EVENT_LOG=/data/events.jsonl
+HTMLSHARE_LOG_UNMATCHED=0
 ```
 
 Start the relay:
@@ -44,6 +45,8 @@ docker compose exec htmlshare tail -f /data/events.jsonl
 ```
 
 The event recorder is isolated behind `record(event)` in `src/index.js`, so the JSONL storage can be replaced by SQLite later without changing request/session handling.
+
+Unmatched scanner traffic such as `/wp-login.php` or `/.env` is not logged by default. Set `HTMLSHARE_LOG_UNMATCHED=1` to include those 404s for diagnostics.
 
 ## macOS App
 
@@ -116,3 +119,4 @@ Open the printed URL.
 - The app prefers `~/.htmlshare/client.env` at runtime. A bundled `client.env` is only a fallback.
 - To implement another platform client, see `docs/client-protocol.md`.
 - Server events are written to `HTMLSHARE_EVENT_LOG` as JSONL by default.
+- Non-share-path scanner traffic is ignored unless `HTMLSHARE_LOG_UNMATCHED=1`.
