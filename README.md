@@ -21,6 +21,7 @@ Edit `.env`:
 ```bash
 SHARE_DOMAIN=share.example.com
 SHARE_TOKEN=change-this-long-random-token
+ADMIN_TOKEN=change-this-different-long-random-token
 HTMLSHARE_MAX_FILE_BYTES=10485760
 HTMLSHARE_EVENT_LOG=/data/events.jsonl
 HTMLSHARE_LOG_UNMATCHED=0
@@ -47,6 +48,31 @@ docker compose exec htmlshare tail -f /data/events.jsonl
 The event recorder is isolated behind `record(event)` in `src/index.js`, so the JSONL storage can be replaced by SQLite later without changing request/session handling.
 
 Unmatched scanner traffic such as `/wp-login.php` or `/.env` is not logged by default. Set `HTMLSHARE_LOG_UNMATCHED=1` to include those 404s for diagnostics.
+
+Admin status:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" https://share.example.com/admin/status
+```
+
+The status response includes uptime, active shares, client IPs, per-share counters, pending request count, and startup totals:
+
+```json
+{
+  "activeShareCount": 1,
+  "pendingRequestCount": 0,
+  "activeShares": [
+    {
+      "sessionId": "XMKjEa6GLXk",
+      "connectedAt": "2026-07-06T00:00:00.000Z",
+      "clientIp": "203.0.113.10",
+      "requestCount": 3,
+      "lastPath": "/s/XMKjEa6GLXk/travel-guide.html",
+      "bytesSent": 12345
+    }
+  ]
+}
+```
 
 ## macOS App
 
