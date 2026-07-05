@@ -9,8 +9,8 @@ struct HtmlShareConfig {
 
     static func load() throws -> HtmlShareConfig {
         let candidates = [
-            Bundle.main.path(forResource: "client", ofType: "env"),
-            "\(NSHomeDirectory())/.htmlshare/client.env"
+            "\(NSHomeDirectory())/.htmlshare/client.env",
+            Bundle.main.path(forResource: "client", ofType: "env")
         ].compactMap { $0 }
 
         for path in candidates where FileManager.default.fileExists(atPath: path) {

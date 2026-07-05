@@ -53,6 +53,8 @@ PUBLIC_BASE_URL=https://share.example.com
 SHARE_TOKEN=change-this-long-random-token
 ```
 
+`HtmlShareSwift.app` reads this file at runtime. Changing the server URL or token only requires editing `~/.htmlshare/client.env` and restarting the app; rebuilding is not required.
+
 Build the app:
 
 ```bash
@@ -102,4 +104,5 @@ Open the printed URL.
 - Only the selected HTML file's directory is shared.
 - Paths cannot escape that directory.
 - Default max single-file response is 10MB. Override with `HTMLSHARE_MAX_FILE_BYTES`.
-- The app bundles `client.env`, including `SHARE_TOKEN`; only share the app with people you trust.
+- The app prefers `~/.htmlshare/client.env` at runtime. A bundled `client.env` is only a fallback.
+- To implement another platform client, see `docs/client-protocol.md`.
