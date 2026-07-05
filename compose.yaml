@@ -6,6 +6,9 @@ services:
       PORT: "8080"
       SHARE_TOKEN: "${SHARE_TOKEN:?set SHARE_TOKEN in .env}"
       HTMLSHARE_MAX_FILE_BYTES: "${HTMLSHARE_MAX_FILE_BYTES:-10485760}"
+      HTMLSHARE_EVENT_LOG: "${HTMLSHARE_EVENT_LOG:-/data/events.jsonl}"
+    volumes:
+      - htmlshare_data:/data
     restart: unless-stopped
 
   caddy:
@@ -23,5 +26,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  htmlshare_data:
   caddy_data:
   caddy_config:

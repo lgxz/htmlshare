@@ -22,6 +22,7 @@ Edit `.env`:
 SHARE_DOMAIN=share.example.com
 SHARE_TOKEN=change-this-long-random-token
 HTMLSHARE_MAX_FILE_BYTES=10485760
+HTMLSHARE_EVENT_LOG=/data/events.jsonl
 ```
 
 Start the relay:
@@ -35,6 +36,14 @@ Check it:
 ```bash
 curl https://share.example.com/healthz
 ```
+
+Events are appended as JSONL. In Docker Compose the default path is `/data/events.jsonl`; local development defaults to `data/events.jsonl`.
+
+```bash
+docker compose exec htmlshare tail -f /data/events.jsonl
+```
+
+The event recorder is isolated behind `record(event)` in `src/index.js`, so the JSONL storage can be replaced by SQLite later without changing request/session handling.
 
 ## macOS App
 
@@ -106,3 +115,4 @@ Open the printed URL.
 - Default max single-file response is 10MB. Override with `HTMLSHARE_MAX_FILE_BYTES`.
 - The app prefers `~/.htmlshare/client.env` at runtime. A bundled `client.env` is only a fallback.
 - To implement another platform client, see `docs/client-protocol.md`.
+- Server events are written to `HTMLSHARE_EVENT_LOG` as JSONL by default.
