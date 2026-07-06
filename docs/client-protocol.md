@@ -39,6 +39,8 @@ SHARE_TOKEN=shared-secret-token
 
 `SHARE_TOKEN` is sent when registering. The relay matches it against a user token in `users.json`; clients with unknown or disabled tokens are rejected.
 
+The first-party macOS app, Go CLI, and Node client include built-in defaults for `https://share.xxyy.eu.org` using the no-cache `public` user token. A third-party client can do the same only if that token is present in the target relay's `users.json`. Local config and environment variables should override built-in defaults.
+
 ## Session ID
 
 Generate a random URL-safe session id for every share.
@@ -101,6 +103,17 @@ The relay replies:
 After this, the public share URL can be copied to the clipboard or shown in the UI.
 
 The `cache` field on registration is optional. If omitted, caching is off for that share. The relay treats the user token's cache policy as an upper bound and the client request as the per-share preference. The effective policy returned in `registered.cache` is what the relay will actually use.
+
+If the user's token does not permit cache, the relay returns:
+
+```json
+{
+  "enabled": false,
+  "ttlSeconds": 0,
+  "maxEntries": 0,
+  "maxBytes": 0
+}
+```
 
 User configuration may express cache TTL as a duration string, such as `"ttl": "1d"`, `"ttl": "3d"`, or `"ttl": "1w"`. WebSocket protocol messages continue to use `ttlSeconds` so clients receive one normalized value.
 
@@ -178,9 +191,11 @@ Fields:
 - `id`: copied from the request.
 - `status`: HTTP status code returned by the relay to the browser.
 - `contentType`: MIME type for successful responses.
-- `size`: byte length of the decoded body.
-- `body`: base64-encoded file bytes.
-- `error`: plain-text error body for non-2xx responses.
+- `size`: byte length of the decoded body. For `HEAD`, this can be sent without `body` so the relay can set `Content-Length`.
+- `body`: base64-encoded file bytes. Required for successful `GET` responses; optional for `HEAD`.
+- `error`: plain-text error body for responses with `status >= 400`.
+
+For browser `HEAD` requests, the relay forwards a `HEAD` request message to the client and does not send a response body to the browser. A client may either send `size` only or reuse its normal `GET` response shape; the relay ignores the body for `HEAD`.
 
 ## File Resolution Rules
 
@@ -295,6 +310,6 @@ while message = ws.receive_json():
 - There is no request body support.
 - There is no range request support.
 - One session id maps to one connected client.
-- If the client disconnects, the relay returns `410 This share is not connected.`
+- If the client disconnects, cached `GET` responses can remain available until TTL expiry. Uncached paths return `410 This share is not connected.`
 
 Future protocol versions could add binary frames, streaming, range requests, and client-advertised capabilities.
