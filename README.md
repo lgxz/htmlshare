@@ -32,6 +32,8 @@ HTMLSHARE_LOG_DISCONNECTED=0
 HTMLSHARE_MAX_PENDING_REQUESTS=100
 HTMLSHARE_MAX_PENDING_PER_SHARE=10
 HTMLSHARE_CACHE_MAX_TOTAL_BYTES=536870912
+HTMLSHARE_CACHE_MAX_ENTRIES=100
+HTMLSHARE_CACHE_MAX_BYTES=104857600
 ```
 
 Edit `users.json`:
@@ -46,8 +48,8 @@ Edit `users.json`:
       "cache": {
         "enabled": true,
         "ttlSeconds": 1800,
-        "maxFileBytes": 1048576,
-        "maxShareBytes": 52428800
+        "maxEntries": 100,
+        "maxBytes": 104857600
       },
       "limits": {
         "maxActiveShares": 5,
@@ -95,11 +97,15 @@ The relay limits in-flight browser requests before forwarding them to a sharing 
 - `HTMLSHARE_MAX_PENDING_REQUESTS`: global in-flight request limit.
 - `limits.maxPendingPerShare`: per-user per-share in-flight request limit.
 
-The relay also limits cache memory:
+The relay also limits cache resources:
 
 - `HTMLSHARE_CACHE_MAX_TOTAL_BYTES`: global in-memory cache limit.
-- `cache.maxFileBytes`: per-token single cached file limit.
-- `cache.maxShareBytes`: per-token per-share cache limit.
+- `HTMLSHARE_CACHE_MAX_ENTRIES`: default per-share cached file count for cache-enabled users.
+- `HTMLSHARE_CACHE_MAX_BYTES`: default per-share cache size for cache-enabled users.
+- `cache.maxEntries`: per-token per-share cached file count limit.
+- `cache.maxBytes`: per-token per-share cache size limit.
+
+`HTMLSHARE_MAX_FILE_BYTES` is separate from cache policy. It limits the maximum single response the relay will receive or forward, whether or not the response is cached.
 
 Admin status:
 
@@ -142,8 +148,8 @@ The status response includes uptime, active shares, client IPs, per-share counte
       "cache": {
         "enabled": false,
         "ttlSeconds": 0,
-        "maxFileBytes": 0,
-        "maxShareBytes": 0
+        "maxEntries": 0,
+        "maxBytes": 0
       },
       "limits": {
         "maxActiveShares": 5,

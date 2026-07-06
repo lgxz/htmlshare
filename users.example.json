@@ -7,8 +7,8 @@
       "cache": {
         "enabled": true,
         "ttlSeconds": 1800,
-        "maxFileBytes": 1048576,
-        "maxShareBytes": 52428800
+        "maxEntries": 100,
+        "maxBytes": 104857600
       },
       "limits": {
         "maxActiveShares": 5,

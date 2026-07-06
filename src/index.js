@@ -17,6 +17,8 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const MAX_PENDING_REQUESTS = positiveInt(process.env.HTMLSHARE_MAX_PENDING_REQUESTS, 100);
 const MAX_PENDING_PER_SHARE = positiveInt(process.env.HTMLSHARE_MAX_PENDING_PER_SHARE, 10);
 const CACHE_MAX_TOTAL_BYTES = nonNegativeInt(process.env.HTMLSHARE_CACHE_MAX_TOTAL_BYTES, 512 * 1024 * 1024);
+const DEFAULT_CACHE_MAX_ENTRIES = positiveInt(process.env.HTMLSHARE_CACHE_MAX_ENTRIES, 100);
+const DEFAULT_CACHE_MAX_BYTES = positiveInt(process.env.HTMLSHARE_CACHE_MAX_BYTES, 100 * 1024 * 1024);
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -63,6 +65,8 @@ Environment:
   HTMLSHARE_MAX_PENDING_REQUESTS Global in-flight browser request limit, default 100
   HTMLSHARE_MAX_PENDING_PER_SHARE Default per-share limit for users.json, default 10
   HTMLSHARE_CACHE_MAX_TOTAL_BYTES Global in-memory cache limit, default 512MB
+  HTMLSHARE_CACHE_MAX_ENTRIES Default per-share cached file count for cache-enabled users, default 100
+  HTMLSHARE_CACHE_MAX_BYTES   Default per-share cache size for cache-enabled users, default 100MB
   ADMIN_TOKEN              Optional bearer token for /admin/status`);
 }
 
@@ -654,11 +658,11 @@ function adminPageHtml() {
           '<td>' + (user.limits?.maxActiveShares || 0) + '</td>' +
           '<td>' + (user.limits?.maxPendingPerShare || 0) + '</td>' +
           '<td>' + (user.cache?.enabled ? '<span class="pill ok">' + user.cache.ttlSeconds + 's</span>' : '<span class="pill">off</span>') + '</td>' +
-          '<td>' + fmtBytes(user.cache?.maxFileBytes || 0) + '</td>' +
-          '<td>' + fmtBytes(user.cache?.maxShareBytes || 0) + '</td>' +
+          '<td>' + (user.cache?.maxEntries || 0) + '</td>' +
+          '<td>' + fmtBytes(user.cache?.maxBytes || 0) + '</td>' +
         '</tr>';
       });
-      table("#users", ["User", "Status", "Active", "Max shares", "Pending/share", "Cache", "Max file", "Max share"], rows);
+      table("#users", ["User", "Status", "Active", "Max shares", "Pending/share", "Cache", "Max entries", "Max bytes"], rows);
     }
 
     async function refresh() {
@@ -823,21 +827,21 @@ function effectiveCachePolicy(userCache, clientCache) {
   const clientEnabled = clientCache.enabled === true;
   const clientTtl = nonNegativeInt(clientCache.ttlSeconds, 0);
   const userTtl = nonNegativeInt(userCache.ttlSeconds, 0);
-  const maxFileBytes = nonNegativeInt(userCache.maxFileBytes, 0);
-  const maxShareBytes = nonNegativeInt(userCache.maxShareBytes, 0);
+  const maxEntries = positiveInt(userCache.maxEntries, DEFAULT_CACHE_MAX_ENTRIES);
+  const maxBytes = positiveInt(userCache.maxBytes, DEFAULT_CACHE_MAX_BYTES);
   const ttlSeconds = Math.min(userTtl, clientTtl);
   const enabled = userCache.enabled === true &&
     clientEnabled &&
     ttlSeconds > 0 &&
-    maxFileBytes > 0 &&
-    maxShareBytes > 0 &&
+    maxEntries > 0 &&
+    maxBytes > 0 &&
     CACHE_MAX_TOTAL_BYTES > 0;
 
   return {
     enabled,
     ttlSeconds: enabled ? ttlSeconds : 0,
-    maxFileBytes,
-    maxShareBytes
+    maxEntries,
+    maxBytes
   };
 }
 
@@ -987,8 +991,19 @@ function createResponseCache({ maxTotalBytes, events }) {
     }
   }
 
-  function evictShareToFit(sessionId, neededBytes, maxShareBytes) {
-    while ((shareBytes.get(sessionId) || 0) + neededBytes > maxShareBytes) {
+  function countShareEntries(sessionId) {
+    let count = 0;
+    for (const entry of entries.values()) {
+      if (entry.sessionId === sessionId) count += 1;
+    }
+    return count;
+  }
+
+  function evictShareToFit(sessionId, neededBytes, policy) {
+    while (
+      (shareBytes.get(sessionId) || 0) + neededBytes > policy.maxBytes ||
+      countShareEntries(sessionId) >= policy.maxEntries
+    ) {
       let removed = false;
       for (const [key, entry] of entries) {
         if (entry.sessionId === sessionId) {
@@ -1033,16 +1048,20 @@ function createResponseCache({ maxTotalBytes, events }) {
     set({ sessionId, user, requestPath, status, headers, body, policy }) {
       if (!policy?.enabled || status !== 200 || !Buffer.isBuffer(body)) return false;
       const bytes = body.length;
-      if (bytes <= 0 || bytes > policy.maxFileBytes || bytes > policy.maxShareBytes || bytes > maxTotalBytes) {
+      if (bytes <= 0 || bytes > policy.maxBytes || bytes > maxTotalBytes) {
         return false;
       }
 
       pruneExpired();
       const key = keyFor(sessionId, requestPath);
       deleteEntry(key, "");
-      evictShareToFit(sessionId, bytes, policy.maxShareBytes);
+      evictShareToFit(sessionId, bytes, policy);
       evictGlobalToFit(bytes);
-      if ((shareBytes.get(sessionId) || 0) + bytes > policy.maxShareBytes || totalBytes + bytes > maxTotalBytes) {
+      if (
+        (shareBytes.get(sessionId) || 0) + bytes > policy.maxBytes ||
+        countShareEntries(sessionId) >= policy.maxEntries ||
+        totalBytes + bytes > maxTotalBytes
+      ) {
         return false;
       }
 
@@ -1205,15 +1224,16 @@ function normalizeUser(rawUser, index) {
 
   const limits = rawUser.limits || {};
   const cache = rawUser.cache || {};
+  const cacheEnabled = cache.enabled === true;
   return {
     name,
     token,
     enabled: true,
     cache: {
-      enabled: cache.enabled === true,
+      enabled: cacheEnabled,
       ttlSeconds: nonNegativeInt(cache.ttlSeconds, 0),
-      maxFileBytes: nonNegativeInt(cache.maxFileBytes, 0),
-      maxShareBytes: nonNegativeInt(cache.maxShareBytes, 0)
+      maxEntries: cacheEnabled ? positiveInt(cache.maxEntries, DEFAULT_CACHE_MAX_ENTRIES) : 0,
+      maxBytes: cacheEnabled ? positiveInt(cache.maxBytes ?? cache.maxShareBytes, DEFAULT_CACHE_MAX_BYTES) : 0
     },
     limits: {
       maxActiveShares: positiveInt(limits.maxActiveShares, 1),
@@ -1230,8 +1250,8 @@ function nullUser(name, token) {
     cache: {
       enabled: false,
       ttlSeconds: 0,
-      maxFileBytes: 0,
-      maxShareBytes: 0
+      maxEntries: 0,
+      maxBytes: 0
     },
     limits: {
       maxActiveShares: 0,

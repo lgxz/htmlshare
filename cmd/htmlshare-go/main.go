@@ -21,7 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const maxFileBytes = 10 * 1024 * 1024
+const maxResponseBytes = 10 * 1024 * 1024
 
 type config struct {
 	serverURL     string
@@ -53,10 +53,10 @@ type cacheRequest struct {
 }
 
 type cachePolicy struct {
-	Enabled       bool `json:"enabled"`
-	TTLSeconds    int  `json:"ttlSeconds"`
-	MaxFileBytes  int  `json:"maxFileBytes"`
-	MaxShareBytes int  `json:"maxShareBytes"`
+	Enabled    bool `json:"enabled"`
+	TTLSeconds int  `json:"ttlSeconds"`
+	MaxEntries int  `json:"maxEntries"`
+	MaxBytes   int  `json:"maxBytes"`
 }
 
 type visitorInfo struct {
@@ -219,7 +219,7 @@ func handleFileRequest(rootDir, requestID, requestPath string) responseMessage {
 	if err != nil || !info.Mode().IsRegular() {
 		return errorResponse(requestID, 404, "Not found\n")
 	}
-	if info.Size() > maxFileBytes {
+	if info.Size() > maxResponseBytes {
 		return errorResponse(requestID, 413, "File is too large for this share.\n")
 	}
 

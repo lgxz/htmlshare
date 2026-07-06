@@ -92,8 +92,8 @@ The relay replies:
   "cache": {
     "enabled": true,
     "ttlSeconds": 600,
-    "maxFileBytes": 1048576,
-    "maxShareBytes": 52428800
+    "maxEntries": 100,
+    "maxBytes": 104857600
   }
 }
 ```

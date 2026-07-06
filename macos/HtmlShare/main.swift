@@ -66,8 +66,8 @@ struct IncomingMessage: Decodable {
 struct CachePolicy: Decodable {
     let enabled: Bool
     let ttlSeconds: Int?
-    let maxFileBytes: Int?
-    let maxShareBytes: Int?
+    let maxEntries: Int?
+    let maxBytes: Int?
 }
 
 struct VisitorInfo: Decodable {
