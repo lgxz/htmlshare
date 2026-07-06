@@ -107,6 +107,21 @@ Admin status:
 curl -H "Authorization: Bearer $ADMIN_TOKEN" https://share.example.com/admin/status
 ```
 
+Admin page:
+
+```text
+https://share.example.com/admin
+```
+
+The browser uses Basic Auth. Enter any username, and use `ADMIN_TOKEN` as the password.
+
+The first admin page is intentionally small:
+
+- View uptime, active shares, configured users, request totals, and cache stats.
+- Clear all in-memory cache.
+- Clear one cached session.
+- Reload `users.json`.
+
 The status response includes uptime, active shares, client IPs, per-share counters, pending request count, and startup totals:
 
 ```json
