@@ -16,6 +16,7 @@ const LOG_DISCONNECTED = process.env.HTMLSHARE_LOG_DISCONNECTED === "1";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const MAX_PENDING_REQUESTS = positiveInt(process.env.HTMLSHARE_MAX_PENDING_REQUESTS, 100);
 const MAX_PENDING_PER_SHARE = positiveInt(process.env.HTMLSHARE_MAX_PENDING_PER_SHARE, 10);
+const CACHE_MAX_TOTAL_BYTES = nonNegativeInt(process.env.HTMLSHARE_CACHE_MAX_TOTAL_BYTES, 512 * 1024 * 1024);
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -49,7 +50,7 @@ if (command === "server") {
 function usage() {
   console.log(`Usage:
   htmlshare server [--port 8080]
-  htmlshare client --server ws://localhost:8080/tunnel --file /path/to/file.html
+  htmlshare client --server ws://localhost:8080/tunnel --file /path/to/file.html [--cache-ttl 10m]
 
 Environment:
   HTMLSHARE_USERS_FILE     Required users.json path for server mode
@@ -61,6 +62,7 @@ Environment:
   HTMLSHARE_LOG_DISCONNECTED Set to 1 to log requests for disconnected /s/... URLs
   HTMLSHARE_MAX_PENDING_REQUESTS Global in-flight browser request limit, default 100
   HTMLSHARE_MAX_PENDING_PER_SHARE Default per-share limit for users.json, default 10
+  HTMLSHARE_CACHE_MAX_TOTAL_BYTES Global in-memory cache limit, default 512MB
   ADMIN_TOKEN              Optional bearer token for /admin/status`);
 }
 
@@ -84,12 +86,16 @@ function runServer() {
 
   const sessions = new Map();
   const pending = new Map();
-  const stats = createStats(pending, sessions);
+  const responseCache = createResponseCache({
+    maxTotalBytes: CACHE_MAX_TOTAL_BYTES,
+    events
+  });
+  const stats = createStats(pending, sessions, responseCache);
 
   const server = createServer(async (req, res) => {
     const startedAt = Date.now();
     let eventWritten = false;
-    const recordRequest = (sessionId, parsed, status, bytes = 0, error = "") => {
+    const recordRequest = (sessionId, parsed, status, bytes = 0, error = "", details = {}) => {
       if (eventWritten) return;
       eventWritten = true;
       stats.recordRequest(sessionId, {
@@ -101,13 +107,14 @@ function runServer() {
       events.record({
         type: "request",
         sessionId,
-        user: sessions.get(sessionId)?.user?.name || "",
+        user: details.user || sessions.get(sessionId)?.user?.name || "",
         method: req.method,
         path: parsed.pathname,
         query: parsed.search || "",
         status,
         bytes,
         durationMs: Date.now() - startedAt,
+        cache: details.cache || "",
         ip: clientIp(req),
         userAgent: req.headers["user-agent"] || "",
         referer: req.headers.referer || "",
@@ -157,18 +164,34 @@ function runServer() {
       }
 
       const [, sessionId, rawPath = ""] = match;
+      if (!["GET", "HEAD"].includes(req.method || "")) {
+        res.writeHead(405, { allow: "GET, HEAD" });
+        res.end();
+        recordRequest(sessionId, parsed, 405, 0, "method_not_allowed");
+        return;
+      }
+
+      const requestPath = `/${rawPath}${parsed.search}`;
+      const cached = responseCache.get(sessionId, requestPath);
+      if (cached) {
+        const headers = { ...cached.headers, "x-htmlshare-cache": "hit" };
+        if (req.method === "HEAD") {
+          res.writeHead(cached.status, headers);
+          res.end();
+          recordRequest(sessionId, parsed, cached.status, 0, "", { user: cached.user, cache: "hit" });
+        } else {
+          res.writeHead(cached.status, headers);
+          res.end(cached.body);
+          recordRequest(sessionId, parsed, cached.status, cached.bytes, "", { user: cached.user, cache: "hit" });
+        }
+        return;
+      }
+
       const session = sessions.get(sessionId);
       if (!session || session.ws.readyState !== WebSocket.OPEN) {
         res.writeHead(410, { "content-type": "text/plain; charset=utf-8" });
         res.end("This share is not connected.\n");
         if (LOG_DISCONNECTED) recordRequest(sessionId, parsed, 410, 0, "share_not_connected");
-        return;
-      }
-
-      if (!["GET", "HEAD"].includes(req.method || "")) {
-        res.writeHead(405, { allow: "GET, HEAD" });
-        res.end();
-        recordRequest(sessionId, parsed, 405, 0, "method_not_allowed");
         return;
       }
 
@@ -186,7 +209,7 @@ function runServer() {
         type: "request",
         id,
         method: req.method,
-        path: `/${rawPath}${parsed.search}`,
+        path: requestPath,
         visitor: {
           ip: clientIp(req),
           userAgent: req.headers["user-agent"] || "",
@@ -211,6 +234,17 @@ function runServer() {
       const body = req.method === "HEAD" ? null : decodeResponseBody(message);
       if (body) headers["content-length"] = String(body.length);
       else if (typeof message.size === "number" && message.size <= MAX_FILE_BYTES) headers["content-length"] = String(message.size);
+      if (req.method === "GET" && (message.status || 200) === 200 && body) {
+        responseCache.set({
+          sessionId,
+          user: session.user.name,
+          requestPath,
+          status: message.status || 200,
+          headers,
+          body,
+          policy: session.cachePolicy
+        });
+      }
       res.writeHead(message.status || 200, headers);
       if (req.method === "HEAD") {
         res.end();
@@ -291,17 +325,18 @@ function runServer() {
           return;
         }
 
+        const cachePolicy = effectiveCachePolicy(user.cache, message.cache || {});
         const share = stats.addShare({
           sessionId: registeredSession,
           userName: user.name,
-          cache: user.cache,
+          cache: cachePolicy,
           limits: user.limits,
           connectedAt,
           clientIp: connectionIp,
           userAgent
         });
-        sessions.set(registeredSession, { ws, share, user });
-        ws.send(JSON.stringify({ type: "registered", sessionId: registeredSession }));
+        sessions.set(registeredSession, { ws, share, user, cachePolicy });
+        ws.send(JSON.stringify({ type: "registered", sessionId: registeredSession, cache: cachePolicy }));
         console.log(`share connected: ${registeredSession} user=${user.name}`);
         events.record({
           type: "share_connected",
@@ -373,6 +408,7 @@ async function runClient() {
   const serverUrl = readOption("--server") || process.env.HTMLSHARE_SERVER;
   const fileArg = readOption("--file") || process.argv[3];
   const shareToken = process.env.SHARE_TOKEN || "";
+  const cacheTtlSeconds = parseDurationSeconds(readOption("--cache-ttl") || process.env.HTMLSHARE_CACHE_TTL || "0");
 
   if (!serverUrl || !fileArg) {
     usage();
@@ -393,7 +429,15 @@ async function runClient() {
 
   const ws = new WebSocket(serverUrl);
   ws.on("open", () => {
-    ws.send(JSON.stringify({ type: "register", sessionId, token: shareToken }));
+    ws.send(JSON.stringify({
+      type: "register",
+      sessionId,
+      token: shareToken,
+      cache: {
+        enabled: cacheTtlSeconds > 0,
+        ttlSeconds: cacheTtlSeconds
+      }
+    }));
   });
 
   ws.on("message", async (data) => {
@@ -408,6 +452,11 @@ async function runClient() {
       console.log("Share URL:");
       console.log(shareUrl);
       copyToClipboard(shareUrl);
+      if (message.cache?.enabled) {
+        console.log(`Cache: ${formatDuration(message.cache.ttlSeconds)}`);
+      } else {
+        console.log("Cache: off");
+      }
       console.log("Keep this process running while sharing. Press Ctrl+C to stop.");
       return;
     }
@@ -493,10 +542,51 @@ function activeShareCountForUser(sessions, userName) {
   return count;
 }
 
+function effectiveCachePolicy(userCache, clientCache) {
+  const clientEnabled = clientCache.enabled === true;
+  const clientTtl = nonNegativeInt(clientCache.ttlSeconds, 0);
+  const userTtl = nonNegativeInt(userCache.ttlSeconds, 0);
+  const maxFileBytes = nonNegativeInt(userCache.maxFileBytes, 0);
+  const maxShareBytes = nonNegativeInt(userCache.maxShareBytes, 0);
+  const ttlSeconds = Math.min(userTtl, clientTtl);
+  const enabled = userCache.enabled === true &&
+    clientEnabled &&
+    ttlSeconds > 0 &&
+    maxFileBytes > 0 &&
+    maxShareBytes > 0 &&
+    CACHE_MAX_TOTAL_BYTES > 0;
+
+  return {
+    enabled,
+    ttlSeconds: enabled ? ttlSeconds : 0,
+    maxFileBytes,
+    maxShareBytes
+  };
+}
+
 function readOption(name) {
   const index = process.argv.indexOf(name);
   if (index === -1) return "";
   return process.argv[index + 1] || "";
+}
+
+function parseDurationSeconds(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "off" || raw === "false" || raw === "0") return 0;
+  const match = /^(\d+)(s|m|h)?$/.exec(raw);
+  if (!match) return 0;
+  const amount = Number.parseInt(match[1], 10);
+  const unit = match[2] || "s";
+  if (unit === "h") return amount * 3600;
+  if (unit === "m") return amount * 60;
+  return amount;
+}
+
+function formatDuration(seconds) {
+  if (!seconds) return "off";
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${seconds}s`;
 }
 
 function positiveInt(value, fallback) {
@@ -569,6 +659,194 @@ function createUserStore(filePath, events) {
       const user = usersByToken.get(token);
       if (!user?.enabled) return null;
       return user;
+    }
+  };
+}
+
+function createResponseCache({ maxTotalBytes, events }) {
+  const entries = new Map();
+  const shareBytes = new Map();
+  const totals = {
+    hits: 0,
+    misses: 0,
+    stores: 0,
+    evictions: 0,
+    expired: 0
+  };
+  let totalBytes = 0;
+
+  const keyFor = (sessionId, requestPath) => `${sessionId}\0${requestPath}`;
+
+  function deleteEntry(key, reason) {
+    const entry = entries.get(key);
+    if (!entry) return false;
+    entries.delete(key);
+    totalBytes -= entry.bytes;
+    const nextShareBytes = (shareBytes.get(entry.sessionId) || 0) - entry.bytes;
+    if (nextShareBytes > 0) shareBytes.set(entry.sessionId, nextShareBytes);
+    else shareBytes.delete(entry.sessionId);
+    if (reason) {
+      totals.evictions += 1;
+      if (reason === "ttl") totals.expired += 1;
+    }
+    return true;
+  }
+
+  function pruneExpired() {
+    const now = Date.now();
+    for (const [key, entry] of entries) {
+      if (entry.expiresAt <= now) {
+        deleteEntry(key, "ttl");
+      }
+    }
+  }
+
+  function evictShareToFit(sessionId, neededBytes, maxShareBytes) {
+    while ((shareBytes.get(sessionId) || 0) + neededBytes > maxShareBytes) {
+      let removed = false;
+      for (const [key, entry] of entries) {
+        if (entry.sessionId === sessionId) {
+          deleteEntry(key, "share_limit");
+          removed = true;
+          break;
+        }
+      }
+      if (!removed) break;
+    }
+  }
+
+  function evictGlobalToFit(neededBytes) {
+    while (totalBytes + neededBytes > maxTotalBytes) {
+      const oldestKey = entries.keys().next().value;
+      if (!oldestKey) break;
+      deleteEntry(oldestKey, "global_limit");
+    }
+  }
+
+  return {
+    get(sessionId, requestPath) {
+      const key = keyFor(sessionId, requestPath);
+      const entry = entries.get(key);
+      if (!entry) {
+        totals.misses += 1;
+        return null;
+      }
+      if (entry.expiresAt <= Date.now()) {
+        deleteEntry(key, "ttl");
+        totals.misses += 1;
+        return null;
+      }
+      entries.delete(key);
+      entry.hits += 1;
+      entry.lastAccessedAt = Date.now();
+      entries.set(key, entry);
+      totals.hits += 1;
+      return entry;
+    },
+
+    set({ sessionId, user, requestPath, status, headers, body, policy }) {
+      if (!policy?.enabled || status !== 200 || !Buffer.isBuffer(body)) return false;
+      const bytes = body.length;
+      if (bytes <= 0 || bytes > policy.maxFileBytes || bytes > policy.maxShareBytes || bytes > maxTotalBytes) {
+        return false;
+      }
+
+      pruneExpired();
+      const key = keyFor(sessionId, requestPath);
+      deleteEntry(key, "");
+      evictShareToFit(sessionId, bytes, policy.maxShareBytes);
+      evictGlobalToFit(bytes);
+      if ((shareBytes.get(sessionId) || 0) + bytes > policy.maxShareBytes || totalBytes + bytes > maxTotalBytes) {
+        return false;
+      }
+
+      const expiresAt = Date.now() + policy.ttlSeconds * 1000;
+      const entry = {
+        key,
+        sessionId,
+        user,
+        requestPath,
+        status,
+        headers: {
+          "content-type": headers["content-type"] || "application/octet-stream",
+          "content-length": String(bytes),
+          "cache-control": `private, max-age=${policy.ttlSeconds}`
+        },
+        body,
+        bytes,
+        createdAt: Date.now(),
+        expiresAt,
+        lastAccessedAt: Date.now(),
+        hits: 0
+      };
+      entries.set(key, entry);
+      shareBytes.set(sessionId, (shareBytes.get(sessionId) || 0) + bytes);
+      totalBytes += bytes;
+      totals.stores += 1;
+      events.record({
+        type: "cache_store",
+        sessionId,
+        user,
+        path: requestPath,
+        bytes,
+        ttlSeconds: policy.ttlSeconds
+      });
+      return true;
+    },
+
+    shareStats(sessionId) {
+      let entryCount = 0;
+      let hits = 0;
+      let expiresAt = 0;
+      for (const entry of entries.values()) {
+        if (entry.sessionId !== sessionId) continue;
+        entryCount += 1;
+        hits += entry.hits;
+        expiresAt = Math.max(expiresAt, entry.expiresAt);
+      }
+      return {
+        entries: entryCount,
+        bytes: shareBytes.get(sessionId) || 0,
+        hits,
+        expiresAt: expiresAt ? new Date(expiresAt).toISOString() : ""
+      };
+    },
+
+    snapshot() {
+      pruneExpired();
+      const cachedShares = new Map();
+      for (const entry of entries.values()) {
+        if (!cachedShares.has(entry.sessionId)) {
+          cachedShares.set(entry.sessionId, {
+            sessionId: entry.sessionId,
+            user: entry.user,
+            entries: 0,
+            bytes: 0,
+            hits: 0,
+            expiresAt: ""
+          });
+        }
+        const share = cachedShares.get(entry.sessionId);
+        share.entries += 1;
+        share.bytes += entry.bytes;
+        share.hits += entry.hits;
+        const currentExpiresAt = share.expiresAt ? Date.parse(share.expiresAt) : 0;
+        if (entry.expiresAt > currentExpiresAt) {
+          share.expiresAt = new Date(entry.expiresAt).toISOString();
+        }
+      }
+      return {
+        enabled: maxTotalBytes > 0,
+        entryCount: entries.size,
+        totalBytes,
+        maxTotalBytes,
+        hits: totals.hits,
+        misses: totals.misses,
+        stores: totals.stores,
+        evictions: totals.evictions,
+        expired: totals.expired,
+        cachedShares: [...cachedShares.values()]
+      };
     }
   };
 }
@@ -654,7 +932,7 @@ function nullUser(name, token) {
   };
 }
 
-function createStats(pending, sessions) {
+function createStats(pending, sessions, responseCache) {
   const startedAt = new Date().toISOString();
   const activeShares = new Map();
   const totals = {
@@ -727,8 +1005,15 @@ function createStats(pending, sessions) {
         uptimeSeconds: Math.floor((Date.now() - Date.parse(startedAt)) / 1000),
         activeShareCount: activeShares.size,
         pendingRequestCount: pending.size,
+        cache: responseCache.snapshot(),
         users: userStats(sessions),
-        activeShares: [...activeShares.values()],
+        activeShares: [...activeShares.values()].map((share) => ({
+          ...share,
+          cache: {
+            ...share.cache,
+            ...responseCache.shareStats(share.sessionId)
+          }
+        })),
         totals: { ...totals }
       };
     }

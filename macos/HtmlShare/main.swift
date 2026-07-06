@@ -60,6 +60,14 @@ struct IncomingMessage: Decodable {
     let method: String?
     let path: String?
     let visitor: VisitorInfo?
+    let cache: CachePolicy?
+}
+
+struct CachePolicy: Decodable {
+    let enabled: Bool
+    let ttlSeconds: Int?
+    let maxFileBytes: Int?
+    let maxShareBytes: Int?
 }
 
 struct VisitorInfo: Decodable {
@@ -169,13 +177,14 @@ final class ShareClient: NSObject, URLSessionWebSocketDelegate {
     private let config: HtmlShareConfig
     private let fileURL: URL
     private let rootURL: URL
+    private let requestedCacheTTL: Int
     private let sessionID: String
     private let shareURL: String
     private var session: URLSession?
     private var webSocket: URLSessionWebSocketTask?
     private var isStopped = false
 
-    var onRegistered: ((String) -> Void)?
+    var onRegistered: ((String, CachePolicy?) -> Void)?
     var onStopped: (() -> Void)?
     var onError: ((String) -> Void)?
     var onVisit: ((VisitRecord) -> Void)?
@@ -186,10 +195,11 @@ final class ShareClient: NSObject, URLSessionWebSocketDelegate {
         return formatter
     }()
 
-    init(config: HtmlShareConfig, fileURL: URL) throws {
+    init(config: HtmlShareConfig, fileURL: URL, cacheTTL: Int = 0) throws {
         self.config = config
         self.fileURL = fileURL.resolvingSymlinksInPath()
         self.rootURL = fileURL.deletingLastPathComponent().resolvingSymlinksInPath()
+        self.requestedCacheTTL = cacheTTL
         self.sessionID = ShareClient.randomID(byteCount: 8)
         let encodedName = fileURL.lastPathComponent.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileURL.lastPathComponent
         self.shareURL = "\(config.publicBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/s/\(sessionID)/\(encodedName)"
@@ -222,7 +232,11 @@ final class ShareClient: NSObject, URLSessionWebSocketDelegate {
         sendJSON([
             "type": "register",
             "sessionId": sessionID,
-            "token": config.token
+            "token": config.token,
+            "cache": [
+                "enabled": requestedCacheTTL > 0,
+                "ttlSeconds": requestedCacheTTL
+            ]
         ])
     }
 
@@ -265,7 +279,7 @@ final class ShareClient: NSObject, URLSessionWebSocketDelegate {
 
         if incoming.type == "registered" {
             DispatchQueue.main.async {
-                self.onRegistered?(self.shareURL)
+                self.onRegistered?(self.shareURL, incoming.cache)
             }
             return
         }
@@ -405,6 +419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
     private var copyButton: NSButton!
     private var openButton: NSButton!
     private var stopButton: NSButton!
+    private var cachePopup: NSPopUpButton!
     private var configLabel: NSTextField!
     private var shareClient: ShareClient?
     private var currentURL = ""
@@ -505,6 +520,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         stopButton.isEnabled = false
         content.addSubview(stopButton)
 
+        cachePopup = NSPopUpButton(frame: NSRect(x: innerX + 454, y: 240, width: 130, height: 30), pullsDown: false)
+        cachePopup.controlSize = .large
+        cachePopup.addItem(withTitle: "Cache Off")
+        cachePopup.addItem(withTitle: "Cache 5 min")
+        cachePopup.addItem(withTitle: "Cache 10 min")
+        cachePopup.addItem(withTitle: "Cache 30 min")
+        content.addSubview(cachePopup)
+
         visitsLabel = label("Visits", size: 13, weight: .medium)
         visitsLabel.textColor = .secondaryLabelColor
         visitsLabel.frame = NSRect(x: outerX, y: 190, width: outerWidth, height: 20)
@@ -593,15 +616,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         stopButton.isEnabled = true
         copyButton.isEnabled = false
         openButton.isEnabled = false
+        cachePopup.isEnabled = false
 
         do {
             let config = try HtmlShareConfig.load()
-            let client = try ShareClient(config: config, fileURL: url)
-            client.onRegistered = { [weak self] shareURL in
+            let client = try ShareClient(config: config, fileURL: url, cacheTTL: selectedCacheTTL())
+            client.onRegistered = { [weak self] shareURL, cache in
                 guard let self else { return }
                 self.currentURL = shareURL
                 self.urlField.stringValue = shareURL
-                self.statusLabel.stringValue = "Sharing"
+                self.statusLabel.stringValue = cacheStatusText(cache)
                 self.copyButton.isEnabled = true
                 self.openButton.isEnabled = true
                 NSPasteboard.general.clearContents()
@@ -639,9 +663,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         copyButton.isEnabled = false
         openButton.isEnabled = false
         stopButton.isEnabled = false
+        cachePopup.isEnabled = true
         if !keepError {
             errorLabel.stringValue = ""
         }
+    }
+
+    private func selectedCacheTTL() -> Int {
+        switch cachePopup.indexOfSelectedItem {
+        case 1:
+            return 5 * 60
+        case 2:
+            return 10 * 60
+        case 3:
+            return 30 * 60
+        default:
+            return 0
+        }
+    }
+
+    private func cacheStatusText(_ cache: CachePolicy?) -> String {
+        guard let cache, cache.enabled, let ttl = cache.ttlSeconds, ttl > 0 else {
+            return "Sharing"
+        }
+        if ttl % 60 == 0 {
+            return "Sharing / Cache \(ttl / 60) min"
+        }
+        return "Sharing / Cache \(ttl)s"
     }
 
     private func appendVisit(_ visit: VisitRecord) {
@@ -736,7 +784,7 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--share-file" 
         let config = try HtmlShareConfig.load()
         let fileURL = URL(fileURLWithPath: CommandLine.arguments[2])
         let client = try ShareClient(config: config, fileURL: fileURL)
-        client.onRegistered = { shareURL in
+        client.onRegistered = { shareURL, _ in
             print(shareURL)
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(shareURL, forType: .string)

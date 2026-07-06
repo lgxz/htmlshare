@@ -28,12 +28,14 @@ type config struct {
 	publicBaseURL string
 	token         string
 	filePath      string
+	cacheTTL      time.Duration
 }
 
 type registerMessage struct {
-	Type      string `json:"type"`
-	SessionID string `json:"sessionId"`
-	Token     string `json:"token"`
+	Type      string       `json:"type"`
+	SessionID string       `json:"sessionId"`
+	Token     string       `json:"token"`
+	Cache     cacheRequest `json:"cache"`
 }
 
 type incomingMessage struct {
@@ -42,6 +44,19 @@ type incomingMessage struct {
 	Method  string       `json:"method"`
 	Path    string       `json:"path"`
 	Visitor *visitorInfo `json:"visitor"`
+	Cache   *cachePolicy `json:"cache"`
+}
+
+type cacheRequest struct {
+	Enabled    bool `json:"enabled"`
+	TTLSeconds int  `json:"ttlSeconds"`
+}
+
+type cachePolicy struct {
+	Enabled       bool `json:"enabled"`
+	TTLSeconds    int  `json:"ttlSeconds"`
+	MaxFileBytes  int  `json:"maxFileBytes"`
+	MaxShareBytes int  `json:"maxShareBytes"`
 }
 
 type visitorInfo struct {
@@ -94,6 +109,7 @@ func loadConfig() (config, error) {
 	flag.StringVar(&cfg.publicBaseURL, "public-base-url", defaultPublicBase, "Public HTTP base URL, e.g. https://share.example.com")
 	flag.StringVar(&cfg.token, "token", defaultToken, "Share token")
 	flag.StringVar(&cfg.filePath, "file", "", "HTML file to share")
+	flag.DurationVar(&cfg.cacheTTL, "cache-ttl", 0, "Request server cache TTL for this share, e.g. 10m; 0 disables cache")
 	flag.Parse()
 
 	if cfg.filePath == "" && flag.NArg() > 0 {
@@ -141,7 +157,15 @@ func run(ctx context.Context, cfg config) error {
 	}
 	defer conn.Close()
 
-	if err := conn.WriteJSON(registerMessage{Type: "register", SessionID: sessionID, Token: cfg.token}); err != nil {
+	if err := conn.WriteJSON(registerMessage{
+		Type:      "register",
+		SessionID: sessionID,
+		Token:     cfg.token,
+		Cache: cacheRequest{
+			Enabled:    cfg.cacheTTL > 0,
+			TTLSeconds: int(cfg.cacheTTL.Seconds()),
+		},
+	}); err != nil {
 		return err
 	}
 
@@ -164,6 +188,11 @@ func run(ctx context.Context, cfg config) error {
 		case "registered":
 			fmt.Println("Share URL:")
 			fmt.Println(shareURL)
+			if message.Cache != nil && message.Cache.Enabled {
+				fmt.Printf("Cache: %s\n", formatCacheDuration(message.Cache.TTLSeconds))
+			} else {
+				fmt.Println("Cache: off")
+			}
 			fmt.Println("Keep this process running while sharing. Press Ctrl+C to stop.")
 			fmt.Println()
 			fmt.Printf("%-8s %-15s %-16s %-18s %-6s %-8s %s\n", "TIME", "IP", "BROWSER", "OS", "STATUS", "BYTES", "PATH")
@@ -280,6 +309,19 @@ func formatVisitTime(value string) string {
 		return parsed.Local().Format("15:04:05")
 	}
 	return time.Now().Format("15:04:05")
+}
+
+func formatCacheDuration(seconds int) string {
+	if seconds <= 0 {
+		return "off"
+	}
+	if seconds%3600 == 0 {
+		return fmt.Sprintf("%dh", seconds/3600)
+	}
+	if seconds%60 == 0 {
+		return fmt.Sprintf("%dm", seconds/60)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }
 
 func parseUserAgent(userAgent string) userAgentInfo {

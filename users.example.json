@@ -5,10 +5,10 @@
       "token": "change-this-long-random-token",
       "enabled": true,
       "cache": {
-        "enabled": false,
-        "ttlSeconds": 0,
-        "maxFileBytes": 0,
-        "maxShareBytes": 0
+        "enabled": true,
+        "ttlSeconds": 1800,
+        "maxFileBytes": 1048576,
+        "maxShareBytes": 52428800
       },
       "limits": {
         "maxActiveShares": 5,

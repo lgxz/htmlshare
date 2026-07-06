@@ -75,7 +75,11 @@ Immediately send:
 {
   "type": "register",
   "sessionId": "XMKjEa6GLXk",
-  "token": "shared-secret-token"
+  "token": "shared-secret-token",
+  "cache": {
+    "enabled": true,
+    "ttlSeconds": 600
+  }
 }
 ```
 
@@ -84,11 +88,19 @@ The relay replies:
 ```json
 {
   "type": "registered",
-  "sessionId": "XMKjEa6GLXk"
+  "sessionId": "XMKjEa6GLXk",
+  "cache": {
+    "enabled": true,
+    "ttlSeconds": 600,
+    "maxFileBytes": 1048576,
+    "maxShareBytes": 52428800
+  }
 }
 ```
 
 After this, the public share URL can be copied to the clipboard or shown in the UI.
+
+The `cache` field on registration is optional. If omitted, caching is off for that share. The relay treats the user token's cache policy as an upper bound and the client request as the per-share preference. The effective policy returned in `registered.cache` is what the relay will actually use.
 
 ## Request Message
 
@@ -230,7 +242,11 @@ ws = websocket_connect(config.HTMLSHARE_SERVER)
 ws.send_json({
   type: "register",
   sessionId: session_id,
-  token: config.SHARE_TOKEN
+  token: config.SHARE_TOKEN,
+  cache: {
+    enabled: cache_ttl_seconds > 0,
+    ttlSeconds: cache_ttl_seconds
+  }
 })
 
 while message = ws.receive_json():
