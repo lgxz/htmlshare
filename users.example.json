@@ -1,0 +1,31 @@
+{
+  "users": [
+    {
+      "name": "lgx",
+      "token": "change-this-long-random-token",
+      "enabled": true,
+      "cache": {
+        "enabled": false,
+        "ttlSeconds": 0,
+        "maxFileBytes": 0,
+        "maxShareBytes": 0
+      },
+      "limits": {
+        "maxActiveShares": 5,
+        "maxPendingPerShare": 10
+      }
+    },
+    {
+      "name": "friend",
+      "token": "change-this-different-long-random-token",
+      "enabled": true,
+      "cache": {
+        "enabled": false
+      },
+      "limits": {
+        "maxActiveShares": 1,
+        "maxPendingPerShare": 3
+      }
+    }
+  ]
+}

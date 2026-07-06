@@ -14,14 +14,17 @@ Point a domain such as `share.example.com` to the VPS, then create `.env`:
 
 ```bash
 cp .env.example .env
+cp users.example.json users.json
+chmod 600 users.json
 ```
 
 Edit `.env`:
 
 ```bash
 SHARE_DOMAIN=share.example.com
-SHARE_TOKEN=change-this-long-random-token
 ADMIN_TOKEN=change-this-different-long-random-token
+HTMLSHARE_USERS_FILE=/config/users.json
+HTMLSHARE_USERS_RELOAD_SECONDS=5
 HTMLSHARE_MAX_FILE_BYTES=10485760
 HTMLSHARE_EVENT_LOG=/data/events.jsonl
 HTMLSHARE_LOG_UNMATCHED=0
@@ -29,6 +32,32 @@ HTMLSHARE_LOG_DISCONNECTED=0
 HTMLSHARE_MAX_PENDING_REQUESTS=100
 HTMLSHARE_MAX_PENDING_PER_SHARE=10
 ```
+
+Edit `users.json`:
+
+```json
+{
+  "users": [
+    {
+      "name": "lgx",
+      "token": "change-this-long-random-token",
+      "enabled": true,
+      "cache": {
+        "enabled": false,
+        "ttlSeconds": 0,
+        "maxFileBytes": 0,
+        "maxShareBytes": 0
+      },
+      "limits": {
+        "maxActiveShares": 5,
+        "maxPendingPerShare": 10
+      }
+    }
+  ]
+}
+```
+
+`users.json` is hot-reloaded. New shares use the latest file within `HTMLSHARE_USERS_RELOAD_SECONDS`; existing connected shares keep the user policy snapshot from registration.
 
 Start the relay:
 
@@ -50,6 +79,8 @@ docker compose exec htmlshare tail -f /data/events.jsonl
 
 The event recorder is isolated behind `record(event)` in `src/index.js`, so the JSONL storage can be replaced by SQLite later without changing request/session handling.
 
+Users are configured in `users.json`. Each token has its own active-share and per-share pending-request limits. Cache policy is stored on each user now and will be used by the server cache feature later.
+
 Unmatched scanner traffic such as `/wp-login.php` or `/.env` is not logged by default. Set `HTMLSHARE_LOG_UNMATCHED=1` to include those 404s for diagnostics.
 
 Requests for disconnected or random `/s/<session-id>/...` URLs are not logged by default. Set `HTMLSHARE_LOG_DISCONNECTED=1` to include those 410s for diagnostics.
@@ -57,7 +88,7 @@ Requests for disconnected or random `/s/<session-id>/...` URLs are not logged by
 The relay limits in-flight browser requests before forwarding them to a sharing client:
 
 - `HTMLSHARE_MAX_PENDING_REQUESTS`: global in-flight request limit.
-- `HTMLSHARE_MAX_PENDING_PER_SHARE`: per-share in-flight request limit.
+- `limits.maxPendingPerShare`: per-user per-share in-flight request limit.
 
 Admin status:
 
@@ -74,6 +105,17 @@ The status response includes uptime, active shares, client IPs, per-share counte
   "activeShares": [
     {
       "sessionId": "XMKjEa6GLXk",
+      "user": "lgx",
+      "cache": {
+        "enabled": false,
+        "ttlSeconds": 0,
+        "maxFileBytes": 0,
+        "maxShareBytes": 0
+      },
+      "limits": {
+        "maxActiveShares": 5,
+        "maxPendingPerShare": 10
+      },
       "connectedAt": "2026-07-06T00:00:00.000Z",
       "clientIp": "203.0.113.10",
       "requestCount": 3,
@@ -101,7 +143,7 @@ PUBLIC_BASE_URL=https://share.example.com
 SHARE_TOKEN=change-this-long-random-token
 ```
 
-`HtmlShareSwift.app` reads this file at runtime. Changing the server URL or token only requires editing `~/.htmlshare/client.env` and restarting the app; rebuilding is not required.
+`SHARE_TOKEN` is the token for one user in `users.json`. `HtmlShareSwift.app` reads this file at runtime. Changing the server URL or token only requires editing `~/.htmlshare/client.env` and restarting the app; rebuilding is not required.
 
 Build the app:
 
@@ -160,7 +202,7 @@ Server:
 
 ```bash
 npm install
-npm run server
+HTMLSHARE_USERS_FILE=users.example.json npm run server
 ```
 
 Client:
@@ -184,6 +226,7 @@ Open the printed URL.
 - Default max single-file response is 10MB. Override with `HTMLSHARE_MAX_FILE_BYTES`.
 - The app prefers `~/.htmlshare/client.env` at runtime. A bundled `client.env` is only a fallback.
 - The native macOS app and Go CLI show visitor records, including IP, browser, and OS.
+- Server authentication uses `users.json`; client config still uses `SHARE_TOKEN` for the selected user's token.
 - To implement another platform client, see `docs/client-protocol.md`.
 - Server events are written to `HTMLSHARE_EVENT_LOG` as JSONL by default.
 - Non-share-path scanner traffic is ignored unless `HTMLSHARE_LOG_UNMATCHED=1`.

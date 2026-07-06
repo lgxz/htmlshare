@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createServer } from "node:http";
-import { mkdirSync, createWriteStream } from "node:fs";
+import { mkdirSync, createWriteStream, readFileSync, statSync } from "node:fs";
 import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -52,29 +52,39 @@ function usage() {
   htmlshare client --server ws://localhost:8080/tunnel --file /path/to/file.html
 
 Environment:
-  SHARE_TOKEN              Required token for server mode and authenticated clients
+  HTMLSHARE_USERS_FILE     Required users.json path for server mode
+  HTMLSHARE_USERS_RELOAD_SECONDS Users file hot reload interval, default 5
   PUBLIC_BASE_URL          Public base URL printed by the client, e.g. https://share.example.com
   HTMLSHARE_MAX_FILE_BYTES Max single file size, default 10MB
   HTMLSHARE_EVENT_LOG      Server JSONL event log path
   HTMLSHARE_LOG_UNMATCHED  Set to 1 to log non-share-path scanner traffic
   HTMLSHARE_LOG_DISCONNECTED Set to 1 to log requests for disconnected /s/... URLs
   HTMLSHARE_MAX_PENDING_REQUESTS Global in-flight browser request limit, default 100
-  HTMLSHARE_MAX_PENDING_PER_SHARE Per-share in-flight browser request limit, default 10
+  HTMLSHARE_MAX_PENDING_PER_SHARE Default per-share limit for users.json, default 10
   ADMIN_TOKEN              Optional bearer token for /admin/status`);
 }
 
 function runServer() {
   const port = readOption("--port") ? Number(readOption("--port")) : DEFAULT_PORT;
-  const shareToken = process.env.SHARE_TOKEN || "";
-  if (!shareToken) {
-    console.error("SHARE_TOKEN is required in server mode.");
+  const usersFile = process.env.HTMLSHARE_USERS_FILE || "";
+  if (!usersFile) {
+    console.error("HTMLSHARE_USERS_FILE is required in server mode.");
     process.exit(78);
   }
 
   const events = createEventRecorder(DEFAULT_EVENT_LOG);
+  const users = createUserStore(usersFile, events);
+  try {
+    users.load();
+  } catch (error) {
+    console.error(error.message);
+    process.exit(78);
+  }
+  users.startReloadTimer(positiveInt(process.env.HTMLSHARE_USERS_RELOAD_SECONDS, 5));
+
   const sessions = new Map();
   const pending = new Map();
-  const stats = createStats(pending);
+  const stats = createStats(pending, sessions);
 
   const server = createServer(async (req, res) => {
     const startedAt = Date.now();
@@ -91,6 +101,7 @@ function runServer() {
       events.record({
         type: "request",
         sessionId,
+        user: sessions.get(sessionId)?.user?.name || "",
         method: req.method,
         path: parsed.pathname,
         query: parsed.search || "",
@@ -161,7 +172,8 @@ function runServer() {
         return;
       }
 
-      if (pending.size >= MAX_PENDING_REQUESTS || pendingCountForSession(pending, sessionId) >= MAX_PENDING_PER_SHARE) {
+      const maxPendingForShare = session.user.limits.maxPendingPerShare;
+      if (pending.size >= MAX_PENDING_REQUESTS || pendingCountForSession(pending, sessionId) >= maxPendingForShare) {
         res.writeHead(429, { "content-type": "text/plain; charset=utf-8", "retry-after": "5" });
         res.end("Too many in-flight requests.\n");
         recordRequest(sessionId, parsed, 429, 0, "too_many_pending_requests");
@@ -234,10 +246,35 @@ function runServer() {
       }
 
       if (message.type === "register") {
-        if (message.token !== shareToken) {
+        if (registeredSession) {
+          stats.totals.shareRejections += 1;
+          events.record({
+            type: "share_rejected",
+            reason: "already_registered",
+            sessionId: registeredSession,
+            ip: connectionIp,
+            userAgent
+          });
+          ws.close(1008, "Already registered");
+          return;
+        }
+        const user = users.findByToken(message.token || "");
+        if (!user) {
           stats.totals.shareRejections += 1;
           events.record({ type: "share_rejected", reason: "bad_token", ip: connectionIp, userAgent });
           ws.close(1008, "Bad token");
+          return;
+        }
+        if (activeShareCountForUser(sessions, user.name) >= user.limits.maxActiveShares) {
+          stats.totals.shareRejections += 1;
+          events.record({
+            type: "share_rejected",
+            reason: "too_many_active_shares",
+            user: user.name,
+            ip: connectionIp,
+            userAgent
+          });
+          ws.close(1008, "Too many active shares");
           return;
         }
         registeredSession = message.sessionId || randomId(8);
@@ -256,16 +293,20 @@ function runServer() {
 
         const share = stats.addShare({
           sessionId: registeredSession,
+          userName: user.name,
+          cache: user.cache,
+          limits: user.limits,
           connectedAt,
           clientIp: connectionIp,
           userAgent
         });
-        sessions.set(registeredSession, { ws, share });
+        sessions.set(registeredSession, { ws, share, user });
         ws.send(JSON.stringify({ type: "registered", sessionId: registeredSession }));
-        console.log(`share connected: ${registeredSession}`);
+        console.log(`share connected: ${registeredSession} user=${user.name}`);
         events.record({
           type: "share_connected",
           sessionId: registeredSession,
+          user: user.name,
           connectedAt,
           ip: connectionIp,
           userAgent
@@ -288,7 +329,8 @@ function runServer() {
         console.log(`share disconnected: ${registeredSession}`);
         events.record({
           type: "share_disconnected",
-          sessionId: registeredSession
+          sessionId: registeredSession,
+          user: session.user?.name || ""
         });
       }
     });
@@ -296,7 +338,7 @@ function runServer() {
 
   server.listen(port, "0.0.0.0", () => {
     console.log(`htmlshare server listening on :${port}`);
-    events.record({ type: "server_started", port, eventLog: DEFAULT_EVENT_LOG });
+    events.record({ type: "server_started", port, eventLog: DEFAULT_EVENT_LOG, usersFile });
   });
 }
 
@@ -443,6 +485,14 @@ function pendingCountForSession(pending, sessionId) {
   return count;
 }
 
+function activeShareCountForUser(sessions, userName) {
+  let count = 0;
+  for (const session of sessions.values()) {
+    if (session.user?.name === userName) count += 1;
+  }
+  return count;
+}
+
 function readOption(name) {
   const index = process.argv.indexOf(name);
   if (index === -1) return "";
@@ -452,6 +502,11 @@ function readOption(name) {
 function positiveInt(value, fallback) {
   const parsed = Number.parseInt(value || "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function nonNegativeInt(value, fallback) {
+  const parsed = Number.parseInt(value || "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function createEventRecorder(filePath) {
@@ -476,7 +531,130 @@ function createEventRecorder(filePath) {
   };
 }
 
-function createStats(pending) {
+function createUserStore(filePath, events) {
+  let usersByToken = new Map();
+  let usersByName = new Map();
+  let lastMtimeMs = 0;
+
+  return {
+    load() {
+      const result = loadUsersFile(filePath);
+      usersByToken = result.usersByToken;
+      usersByName = result.usersByName;
+      lastMtimeMs = result.mtimeMs;
+      events.record({ type: "users_loaded", usersFile: filePath, userCount: usersByName.size });
+      console.log(`loaded ${usersByName.size} htmlshare user(s)`);
+    },
+
+    startReloadTimer(intervalSeconds) {
+      const intervalMs = Math.max(intervalSeconds, 1) * 1000;
+      const timer = setInterval(() => {
+        stat(filePath).then((info) => {
+          if (info.mtimeMs <= lastMtimeMs) return;
+          const result = loadUsersFile(filePath);
+          usersByToken = result.usersByToken;
+          usersByName = result.usersByName;
+          lastMtimeMs = result.mtimeMs;
+          events.record({ type: "users_reloaded", usersFile: filePath, userCount: usersByName.size });
+          console.log(`reloaded ${usersByName.size} htmlshare user(s)`);
+        }).catch((error) => {
+          events.record({ type: "users_reload_failed", usersFile: filePath, error: error.message });
+          console.error(`users reload failed: ${error.message}`);
+        });
+      }, intervalMs);
+      timer.unref?.();
+    },
+
+    findByToken(token) {
+      const user = usersByToken.get(token);
+      if (!user?.enabled) return null;
+      return user;
+    }
+  };
+}
+
+function loadUsersFile(filePath) {
+  const info = statSync(filePath);
+  const text = readFileSync(filePath, "utf8");
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Invalid users file JSON: ${error.message}`);
+  }
+
+  if (!document || !Array.isArray(document.users) || document.users.length === 0) {
+    throw new Error("Invalid users file: expected a non-empty users array.");
+  }
+
+  const usersByToken = new Map();
+  const usersByName = new Map();
+  for (const [index, rawUser] of document.users.entries()) {
+    const user = normalizeUser(rawUser, index);
+    if (usersByName.has(user.name)) {
+      throw new Error(`Invalid users file: duplicate user name "${user.name}".`);
+    }
+    if (usersByToken.has(user.token)) {
+      throw new Error(`Invalid users file: duplicate token for user "${user.name}".`);
+    }
+    usersByName.set(user.name, user);
+    usersByToken.set(user.token, user);
+  }
+
+  return { usersByToken, usersByName, mtimeMs: info.mtimeMs };
+}
+
+function normalizeUser(rawUser, index) {
+  if (!rawUser || typeof rawUser !== "object") {
+    throw new Error(`Invalid users file: user at index ${index} must be an object.`);
+  }
+
+  const name = String(rawUser.name || "").trim();
+  const token = String(rawUser.token || "").trim();
+  if (!name) throw new Error(`Invalid users file: user at index ${index} is missing name.`);
+  if (!token) throw new Error(`Invalid users file: user "${name}" is missing token.`);
+  if (rawUser.enabled === false) {
+    return nullUser(name, token);
+  }
+
+  const limits = rawUser.limits || {};
+  const cache = rawUser.cache || {};
+  return {
+    name,
+    token,
+    enabled: true,
+    cache: {
+      enabled: cache.enabled === true,
+      ttlSeconds: nonNegativeInt(cache.ttlSeconds, 0),
+      maxFileBytes: nonNegativeInt(cache.maxFileBytes, 0),
+      maxShareBytes: nonNegativeInt(cache.maxShareBytes, 0)
+    },
+    limits: {
+      maxActiveShares: positiveInt(limits.maxActiveShares, 1),
+      maxPendingPerShare: positiveInt(limits.maxPendingPerShare, MAX_PENDING_PER_SHARE)
+    }
+  };
+}
+
+function nullUser(name, token) {
+  return {
+    name,
+    token,
+    enabled: false,
+    cache: {
+      enabled: false,
+      ttlSeconds: 0,
+      maxFileBytes: 0,
+      maxShareBytes: 0
+    },
+    limits: {
+      maxActiveShares: 0,
+      maxPendingPerShare: MAX_PENDING_PER_SHARE
+    }
+  };
+}
+
+function createStats(pending, sessions) {
   const startedAt = new Date().toISOString();
   const activeShares = new Map();
   const totals = {
@@ -493,10 +671,13 @@ function createStats(pending) {
   return {
     totals,
 
-    addShare({ sessionId, connectedAt, clientIp, userAgent }) {
+    addShare({ sessionId, userName, cache, limits, connectedAt, clientIp, userAgent }) {
       totals.sharesStarted += 1;
       const share = {
         sessionId,
+        user: userName,
+        cache: { ...cache },
+        limits: { ...limits },
         connectedAt,
         clientIp,
         userAgent,
@@ -546,11 +727,33 @@ function createStats(pending) {
         uptimeSeconds: Math.floor((Date.now() - Date.parse(startedAt)) / 1000),
         activeShareCount: activeShares.size,
         pendingRequestCount: pending.size,
+        users: userStats(sessions),
         activeShares: [...activeShares.values()],
         totals: { ...totals }
       };
     }
   };
+}
+
+function userStats(sessions) {
+  const users = new Map();
+  for (const session of sessions.values()) {
+    const userName = session.user?.name || "";
+    if (!userName) continue;
+    if (!users.has(userName)) {
+      users.set(userName, {
+        name: userName,
+        activeShareCount: 0,
+        requestCount: 0,
+        bytesSent: 0
+      });
+    }
+    const entry = users.get(userName);
+    entry.activeShareCount += 1;
+    entry.requestCount += session.share?.requestCount || 0;
+    entry.bytesSent += session.share?.bytesSent || 0;
+  }
+  return [...users.values()];
 }
 
 function isAdminAuthorized(req) {

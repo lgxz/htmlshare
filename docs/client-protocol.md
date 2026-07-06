@@ -37,7 +37,7 @@ SHARE_TOKEN=shared-secret-token
 
 `PUBLIC_BASE_URL` is used by the client to print or display the browser URL.
 
-`SHARE_TOKEN` is sent when registering. If the relay has `SHARE_TOKEN` configured, clients with the wrong token are rejected.
+`SHARE_TOKEN` is sent when registering. The relay matches it against a user token in `users.json`; clients with unknown or disabled tokens are rejected.
 
 ## Session ID
 
