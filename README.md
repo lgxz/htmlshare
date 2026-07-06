@@ -47,7 +47,7 @@ Edit `users.json`:
       "enabled": true,
       "cache": {
         "enabled": true,
-        "ttlSeconds": 1800,
+        "ttl": "1d",
         "maxEntries": 100,
         "maxBytes": 104857600
       },
@@ -85,6 +85,14 @@ The event recorder is isolated behind `record(event)` in `src/index.js`, so the 
 Users are configured in `users.json`. Each token has its own active-share, per-share pending-request, and cache limits.
 
 Cache policy is a permission upper bound. Clients still choose whether a specific share requests cache and for how long. The server uses the stricter result and returns the effective cache policy when the share is registered.
+
+In `users.json`, cache TTL can be written as a duration string:
+
+```json
+{ "ttl": "1d" }
+```
+
+Supported units are `s`, `m`, `h`, `d`, and `w`, such as `30m`, `1d`, `3d`, or `1w`. The older `ttlSeconds` number is still accepted.
 
 The cache is in memory only. It stores successful `GET /s/<session-id>/<path>` responses, can serve cached files after the client disconnects until TTL expiry, and is cleared when the server process restarts. In the macOS app, the Stop button explicitly clears cached files for that share; closing the window just disconnects and leaves cache entries until TTL expiry. `HEAD` can read an existing cached `GET` response but does not create cache entries.
 
@@ -210,7 +218,7 @@ The Go CLI uses the same `~/.htmlshare/client.env` config as the macOS app and p
 Run from source:
 
 ```bash
-go run ./cmd/htmlshare-go --file /path/to/file.html --cache-ttl 10m
+go run ./cmd/htmlshare-go --file /path/to/file.html --cache-ttl 1d
 ```
 
 Build a local binary:
@@ -230,7 +238,7 @@ GOOS=darwin GOARCH=arm64 go build -o dist/htmlshare-go-macos-arm64 ./cmd/htmlsha
 ## Use
 
 1. Open `HtmlShareSwift.app`.
-2. Optional: choose `Cache 5 min`, `Cache 10 min`, or `Cache 30 min`.
+2. Optional: choose a cache duration, from minutes up to one week.
 3. Click `Choose File`.
 4. Select an `.html` or `.htm` file.
 5. The share URL is displayed and copied to the clipboard.
@@ -254,7 +262,7 @@ PUBLIC_BASE_URL=http://localhost:8080 npm run client -- --server ws://localhost:
 Go client:
 
 ```bash
-HTMLSHARE_SERVER=ws://localhost:8080/tunnel PUBLIC_BASE_URL=http://localhost:8080 SHARE_TOKEN=change-this-long-random-token go run ./cmd/htmlshare-go --file /path/to/file.html --cache-ttl 10m
+HTMLSHARE_SERVER=ws://localhost:8080/tunnel PUBLIC_BASE_URL=http://localhost:8080 SHARE_TOKEN=change-this-long-random-token go run ./cmd/htmlshare-go --file /path/to/file.html --cache-ttl 1d
 ```
 
 Open the printed URL.

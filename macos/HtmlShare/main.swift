@@ -548,6 +548,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         cachePopup.addItem(withTitle: "Cache 5 min")
         cachePopup.addItem(withTitle: "Cache 10 min")
         cachePopup.addItem(withTitle: "Cache 30 min")
+        cachePopup.addItem(withTitle: "Cache 1 day")
+        cachePopup.addItem(withTitle: "Cache 3 days")
+        cachePopup.addItem(withTitle: "Cache 1 week")
         content.addSubview(cachePopup)
 
         visitsLabel = label("Visits", size: 13, weight: .medium)
@@ -699,6 +702,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
             return 10 * 60
         case 3:
             return 30 * 60
+        case 4:
+            return 24 * 60 * 60
+        case 5:
+            return 3 * 24 * 60 * 60
+        case 6:
+            return 7 * 24 * 60 * 60
         default:
             return 0
         }
@@ -707,6 +716,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
     private func cacheStatusText(_ cache: CachePolicy?) -> String {
         guard let cache, cache.enabled, let ttl = cache.ttlSeconds, ttl > 0 else {
             return "Sharing"
+        }
+        if ttl % (7 * 24 * 60 * 60) == 0 {
+            let weeks = ttl / (7 * 24 * 60 * 60)
+            return "Sharing / Cache \(weeks) \(weeks == 1 ? "week" : "weeks")"
+        }
+        if ttl % (24 * 60 * 60) == 0 {
+            let days = ttl / (24 * 60 * 60)
+            return "Sharing / Cache \(days) \(days == 1 ? "day" : "days")"
         }
         if ttl % 60 == 0 {
             return "Sharing / Cache \(ttl / 60) min"

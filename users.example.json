@@ -6,7 +6,7 @@
       "enabled": true,
       "cache": {
         "enabled": true,
-        "ttlSeconds": 1800,
+        "ttl": "1d",
         "maxEntries": 100,
         "maxBytes": 104857600
       },

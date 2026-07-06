@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -28,7 +29,7 @@ type config struct {
 	publicBaseURL string
 	token         string
 	filePath      string
-	cacheTTL      time.Duration
+	cacheTTL      int
 }
 
 type registerMessage struct {
@@ -105,11 +106,12 @@ func loadConfig() (config, error) {
 	defaultToken := firstNonEmpty(os.Getenv("SHARE_TOKEN"), env["SHARE_TOKEN"])
 
 	cfg := config{}
+	cacheTTL := ""
 	flag.StringVar(&cfg.serverURL, "server", defaultServer, "WebSocket relay URL, e.g. wss://share.example.com/tunnel")
 	flag.StringVar(&cfg.publicBaseURL, "public-base-url", defaultPublicBase, "Public HTTP base URL, e.g. https://share.example.com")
 	flag.StringVar(&cfg.token, "token", defaultToken, "Share token")
 	flag.StringVar(&cfg.filePath, "file", "", "HTML file to share")
-	flag.DurationVar(&cfg.cacheTTL, "cache-ttl", 0, "Request server cache TTL for this share, e.g. 10m; 0 disables cache")
+	flag.StringVar(&cacheTTL, "cache-ttl", "0", "Request server cache TTL for this share, e.g. 10m, 1d, 1w; 0 disables cache")
 	flag.Parse()
 
 	if cfg.filePath == "" && flag.NArg() > 0 {
@@ -124,6 +126,11 @@ func loadConfig() (config, error) {
 	if cfg.filePath == "" {
 		return cfg, errors.New("missing file: pass --file /path/to/file.html")
 	}
+	ttlSeconds, err := parseDurationSeconds(cacheTTL)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.cacheTTL = ttlSeconds
 	return cfg, nil
 }
 
@@ -163,7 +170,7 @@ func run(ctx context.Context, cfg config) error {
 		Token:     cfg.token,
 		Cache: cacheRequest{
 			Enabled:    cfg.cacheTTL > 0,
-			TTLSeconds: int(cfg.cacheTTL.Seconds()),
+			TTLSeconds: cfg.cacheTTL,
 		},
 	}); err != nil {
 		return err
@@ -315,6 +322,12 @@ func formatCacheDuration(seconds int) string {
 	if seconds <= 0 {
 		return "off"
 	}
+	if seconds%(7*24*3600) == 0 {
+		return fmt.Sprintf("%dw", seconds/(7*24*3600))
+	}
+	if seconds%(24*3600) == 0 {
+		return fmt.Sprintf("%dd", seconds/(24*3600))
+	}
 	if seconds%3600 == 0 {
 		return fmt.Sprintf("%dh", seconds/3600)
 	}
@@ -322,6 +335,40 @@ func formatCacheDuration(seconds int) string {
 		return fmt.Sprintf("%dm", seconds/60)
 	}
 	return fmt.Sprintf("%ds", seconds)
+}
+
+func parseDurationSeconds(value string) (int, error) {
+	raw := strings.ToLower(strings.TrimSpace(value))
+	if raw == "" || raw == "0" || raw == "off" || raw == "false" {
+		return 0, nil
+	}
+
+	index := 0
+	for index < len(raw) && raw[index] >= '0' && raw[index] <= '9' {
+		index++
+	}
+	if index == 0 {
+		return 0, fmt.Errorf("invalid cache ttl %q", value)
+	}
+	amount, err := strconv.Atoi(raw[:index])
+	if err != nil || amount < 0 {
+		return 0, fmt.Errorf("invalid cache ttl %q", value)
+	}
+	unit := strings.TrimSpace(raw[index:])
+	switch unit {
+	case "", "s", "sec", "secs", "second", "seconds":
+		return amount, nil
+	case "m", "min", "mins", "minute", "minutes":
+		return amount * 60, nil
+	case "h", "hr", "hrs", "hour", "hours":
+		return amount * 3600, nil
+	case "d", "day", "days":
+		return amount * 24 * 3600, nil
+	case "w", "week", "weeks":
+		return amount * 7 * 24 * 3600, nil
+	default:
+		return 0, fmt.Errorf("invalid cache ttl unit %q in %q", unit, value)
+	}
 }
 
 func parseUserAgent(userAgent string) userAgentInfo {

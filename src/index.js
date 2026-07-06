@@ -578,6 +578,14 @@ function adminPageHtml() {
       while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
       return (index === 0 ? value : value.toFixed(1)) + " " + units[index];
     };
+    const fmtDuration = (seconds) => {
+      if (!seconds) return "off";
+      if (seconds % 604800 === 0) return (seconds / 604800) + "w";
+      if (seconds % 86400 === 0) return (seconds / 86400) + "d";
+      if (seconds % 3600 === 0) return (seconds / 3600) + "h";
+      if (seconds % 60 === 0) return (seconds / 60) + "m";
+      return seconds + "s";
+    };
     const fmtTime = (value) => value ? new Date(value).toLocaleString() : "-";
     const esc = (value) => String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const text = (value) => value === undefined || value === null || value === "" ? "-" : esc(value);
@@ -621,7 +629,7 @@ function adminPageHtml() {
         '<td>' + fmtTime(share.connectedAt) + '</td>' +
         '<td>' + (share.requestCount || 0) + '</td>' +
         '<td>' + fmtBytes(share.bytesSent || 0) + '</td>' +
-        '<td>' + ((share.cache && share.cache.enabled) ? '<span class="pill ok">' + share.cache.ttlSeconds + 's</span>' : '<span class="pill">off</span>') + '</td>' +
+        '<td>' + ((share.cache && share.cache.enabled) ? '<span class="pill ok">' + fmtDuration(share.cache.ttlSeconds) + '</span>' : '<span class="pill">off</span>') + '</td>' +
         '<td>' + (share.cache?.entries || 0) + ' / ' + fmtBytes(share.cache?.bytes || 0) + '</td>' +
         '<td class="path">' + text(share.lastPath) + '</td>' +
         '</tr>');
@@ -657,7 +665,7 @@ function adminPageHtml() {
           '<td>' + (stats.activeShareCount || 0) + '</td>' +
           '<td>' + (user.limits?.maxActiveShares || 0) + '</td>' +
           '<td>' + (user.limits?.maxPendingPerShare || 0) + '</td>' +
-          '<td>' + (user.cache?.enabled ? '<span class="pill ok">' + user.cache.ttlSeconds + 's</span>' : '<span class="pill">off</span>') + '</td>' +
+          '<td>' + (user.cache?.enabled ? '<span class="pill ok">' + fmtDuration(user.cache.ttlSeconds) + '</span>' : '<span class="pill">off</span>') + '</td>' +
           '<td>' + (user.cache?.maxEntries || 0) + '</td>' +
           '<td>' + fmtBytes(user.cache?.maxBytes || 0) + '</td>' +
         '</tr>';
@@ -854,17 +862,21 @@ function readOption(name) {
 function parseDurationSeconds(value) {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw || raw === "off" || raw === "false" || raw === "0") return 0;
-  const match = /^(\d+)(s|m|h)?$/.exec(raw);
+  const match = /^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)?$/.exec(raw);
   if (!match) return 0;
   const amount = Number.parseInt(match[1], 10);
   const unit = match[2] || "s";
-  if (unit === "h") return amount * 3600;
-  if (unit === "m") return amount * 60;
+  if (["w", "week", "weeks"].includes(unit)) return amount * 7 * 24 * 3600;
+  if (["d", "day", "days"].includes(unit)) return amount * 24 * 3600;
+  if (["h", "hr", "hrs", "hour", "hours"].includes(unit)) return amount * 3600;
+  if (["m", "min", "mins", "minute", "minutes"].includes(unit)) return amount * 60;
   return amount;
 }
 
 function formatDuration(seconds) {
   if (!seconds) return "off";
+  if (seconds % (7 * 24 * 3600) === 0) return `${seconds / (7 * 24 * 3600)}w`;
+  if (seconds % (24 * 3600) === 0) return `${seconds / (24 * 3600)}d`;
   if (seconds % 3600 === 0) return `${seconds / 3600}h`;
   if (seconds % 60 === 0) return `${seconds / 60}m`;
   return `${seconds}s`;
@@ -1225,13 +1237,14 @@ function normalizeUser(rawUser, index) {
   const limits = rawUser.limits || {};
   const cache = rawUser.cache || {};
   const cacheEnabled = cache.enabled === true;
+  const ttlSeconds = parseCacheTtlSeconds(cache);
   return {
     name,
     token,
     enabled: true,
     cache: {
       enabled: cacheEnabled,
-      ttlSeconds: nonNegativeInt(cache.ttlSeconds, 0),
+      ttlSeconds,
       maxEntries: cacheEnabled ? positiveInt(cache.maxEntries, DEFAULT_CACHE_MAX_ENTRIES) : 0,
       maxBytes: cacheEnabled ? positiveInt(cache.maxBytes ?? cache.maxShareBytes, DEFAULT_CACHE_MAX_BYTES) : 0
     },
@@ -1240,6 +1253,11 @@ function normalizeUser(rawUser, index) {
       maxPendingPerShare: positiveInt(limits.maxPendingPerShare, MAX_PENDING_PER_SHARE)
     }
   };
+}
+
+function parseCacheTtlSeconds(cache) {
+  if (cache.ttl !== undefined) return parseDurationSeconds(cache.ttl);
+  return nonNegativeInt(cache.ttlSeconds, 0);
 }
 
 function nullUser(name, token) {

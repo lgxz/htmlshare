@@ -102,6 +102,8 @@ After this, the public share URL can be copied to the clipboard or shown in the 
 
 The `cache` field on registration is optional. If omitted, caching is off for that share. The relay treats the user token's cache policy as an upper bound and the client request as the per-share preference. The effective policy returned in `registered.cache` is what the relay will actually use.
 
+User configuration may express cache TTL as a duration string, such as `"ttl": "1d"`, `"ttl": "3d"`, or `"ttl": "1w"`. WebSocket protocol messages continue to use `ttlSeconds` so clients receive one normalized value.
+
 To explicitly stop a share and ask the relay to clear any cached files for that session, send:
 
 ```json
