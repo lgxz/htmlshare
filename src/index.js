@@ -347,6 +347,22 @@ function runServer() {
         return;
       }
 
+      if (message.type === "stop" && registeredSession) {
+        const session = sessions.get(registeredSession);
+        const cleared = message.purgeCache === true
+          ? responseCache.clearSession(registeredSession)
+          : { entriesCleared: 0, bytesCleared: 0 };
+        events.record({
+          type: "share_stopped",
+          sessionId: registeredSession,
+          user: session?.user?.name || "",
+          purgeCache: message.purgeCache === true,
+          ...cleared
+        });
+        ws.close(1000, "Stopped");
+        return;
+      }
+
       if (message.type === "response" && pending.has(message.id)) {
         const entry = pending.get(message.id);
         entry.resolve(message);

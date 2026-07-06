@@ -102,6 +102,18 @@ After this, the public share URL can be copied to the clipboard or shown in the 
 
 The `cache` field on registration is optional. If omitted, caching is off for that share. The relay treats the user token's cache policy as an upper bound and the client request as the per-share preference. The effective policy returned in `registered.cache` is what the relay will actually use.
 
+To explicitly stop a share and ask the relay to clear any cached files for that session, send:
+
+```json
+{
+  "type": "stop",
+  "sessionId": "XMKjEa6GLXk",
+  "purgeCache": true
+}
+```
+
+The relay closes the WebSocket after processing the stop message. If the client simply disconnects or exits without sending `stop`, cached files can continue to be served until their TTL expires.
+
 ## Request Message
 
 When a browser requests a shared file, the relay sends this message to the connected client:
@@ -219,15 +231,20 @@ Starting
 Sharing
   -> show/copy public URL
 Stopped
-  -> close WebSocket; URL returns 410 from relay
+  -> send stop with purgeCache=true; relay clears cached files and closes WebSocket
+Closed
+  -> close WebSocket; cached files may remain available until TTL expiry
 ```
 
 Stop sharing when:
 
 - The user clicks `Stop`.
+- The WebSocket disconnects.
+
+Disconnect without purging when:
+
 - The app window closes.
 - The app exits.
-- The WebSocket disconnects.
 
 ## Minimal Pseudocode
 

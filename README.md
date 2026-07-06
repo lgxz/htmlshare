@@ -84,7 +84,7 @@ Users are configured in `users.json`. Each token has its own active-share, per-s
 
 Cache policy is a permission upper bound. Clients still choose whether a specific share requests cache and for how long. The server uses the stricter result and returns the effective cache policy when the share is registered.
 
-The cache is in memory only. It stores successful `GET /s/<session-id>/<path>` responses, can serve cached files after the client disconnects until TTL expiry, and is cleared when the server process restarts. `HEAD` can read an existing cached `GET` response but does not create cache entries.
+The cache is in memory only. It stores successful `GET /s/<session-id>/<path>` responses, can serve cached files after the client disconnects until TTL expiry, and is cleared when the server process restarts. In the macOS app, the Stop button explicitly clears cached files for that share; closing the window just disconnects and leaves cache entries until TTL expiry. `HEAD` can read an existing cached `GET` response but does not create cache entries.
 
 Unmatched scanner traffic such as `/wp-login.php` or `/.env` is not logged by default. Set `HTMLSHARE_LOG_UNMATCHED=1` to include those 404s for diagnostics.
 
@@ -199,7 +199,7 @@ ditto -c -k --sequesterRsrc --keepParent HtmlShareSwift.app HtmlShareSwift-macos
 
 ## Go CLI
 
-The Go CLI uses the same `~/.htmlshare/client.env` config as the macOS app and prints each visit with IP, browser, OS, status, bytes, and path.
+The Go CLI uses the same `~/.htmlshare/client.env` config as the macOS app and prints each visit with IP, browser, OS, status, bytes, and path. Interrupting the CLI disconnects the client; any cached files remain available until their TTL expires.
 
 Run from source:
 

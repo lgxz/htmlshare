@@ -220,8 +220,30 @@ final class ShareClient: NSObject, URLSessionWebSocketDelegate {
         receiveNext()
     }
 
-    func stop() {
+    func stop(purgeCache: Bool = false) {
         isStopped = true
+        guard purgeCache, let webSocket else {
+            closeSocket()
+            return
+        }
+        let message: [String: Any] = [
+            "type": "stop",
+            "sessionId": sessionID,
+            "purgeCache": true
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: message),
+              let text = String(data: data, encoding: .utf8) else {
+            closeSocket()
+            return
+        }
+        webSocket.send(.string(text)) { _ in
+            DispatchQueue.main.async {
+                self.closeSocket()
+            }
+        }
+    }
+
+    private func closeSocket() {
         webSocket?.cancel(with: .normalClosure, reason: nil)
         session?.invalidateAndCancel()
         webSocket = nil
@@ -598,12 +620,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
     }
 
     @objc private func stopButtonPressed() {
-        stopSharing()
+        stopSharing(purgeCache: true)
         setIdle()
     }
 
     private func startSharing(_ url: URL) {
-        stopSharing()
+        stopSharing(purgeCache: true)
         errorLabel.stringValue = ""
         visits.removeAll()
         visitsTable.reloadData()
@@ -648,8 +670,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         }
     }
 
-    private func stopSharing() {
-        shareClient?.stop()
+    private func stopSharing(purgeCache: Bool = false) {
+        shareClient?.stop(purgeCache: purgeCache)
         shareClient = nil
         currentURL = ""
     }
