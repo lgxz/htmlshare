@@ -16,6 +16,18 @@
       }
     },
     {
+      "name": "public",
+      "token": "69a00c76d73257a4369f868d71ffdccaeb6391fcb6cc074b",
+      "enabled": true,
+      "cache": {
+        "enabled": false
+      },
+      "limits": {
+        "maxActiveShares": 50,
+        "maxPendingPerShare": 3
+      }
+    },
+    {
       "name": "friend",
       "token": "change-this-different-long-random-token",
       "enabled": true,

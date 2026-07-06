@@ -23,6 +23,9 @@ import (
 )
 
 const maxResponseBytes = 10 * 1024 * 1024
+const defaultServerURL = "wss://share.xxyy.eu.org/tunnel"
+const defaultPublicBaseURL = "https://share.xxyy.eu.org"
+const defaultShareToken = "69a00c76d73257a4369f868d71ffdccaeb6391fcb6cc074b"
 
 type config struct {
 	serverURL     string
@@ -101,9 +104,9 @@ func main() {
 func loadConfig() (config, error) {
 	env := readClientEnv()
 
-	defaultServer := firstNonEmpty(os.Getenv("HTMLSHARE_SERVER"), env["HTMLSHARE_SERVER"])
-	defaultPublicBase := firstNonEmpty(os.Getenv("PUBLIC_BASE_URL"), env["PUBLIC_BASE_URL"], publicBaseFromServer(defaultServer))
-	defaultToken := firstNonEmpty(os.Getenv("SHARE_TOKEN"), env["SHARE_TOKEN"])
+	defaultServer := firstNonEmpty(os.Getenv("HTMLSHARE_SERVER"), env["HTMLSHARE_SERVER"], defaultServerURL)
+	defaultPublicBase := firstNonEmpty(os.Getenv("PUBLIC_BASE_URL"), env["PUBLIC_BASE_URL"], publicBaseFromServer(defaultServer), defaultPublicBaseURL)
+	defaultToken := firstNonEmpty(os.Getenv("SHARE_TOKEN"), env["SHARE_TOKEN"], defaultShareToken)
 
 	cfg := config{}
 	cacheTTL := ""

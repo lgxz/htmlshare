@@ -3,6 +3,10 @@ import Foundation
 import UniformTypeIdentifiers
 
 struct HtmlShareConfig {
+    static let defaultServerURL = "wss://share.xxyy.eu.org/tunnel"
+    static let defaultPublicBaseURL = "https://share.xxyy.eu.org"
+    static let defaultToken = "69a00c76d73257a4369f868d71ffdccaeb6391fcb6cc074b"
+
     let serverURL: String
     let publicBaseURL: String
     let token: String
@@ -16,17 +20,20 @@ struct HtmlShareConfig {
         for path in candidates where FileManager.default.fileExists(atPath: path) {
             let text = try String(contentsOfFile: path, encoding: .utf8)
             let values = parseEnv(text)
-            if let serverURL = values["HTMLSHARE_SERVER"],
-               let publicBaseURL = values["PUBLIC_BASE_URL"] {
-                return HtmlShareConfig(
-                    serverURL: serverURL,
-                    publicBaseURL: publicBaseURL,
-                    token: values["SHARE_TOKEN"] ?? ""
-                )
-            }
+            let serverURL = values["HTMLSHARE_SERVER"] ?? defaultServerURL
+            let publicBaseURL = values["PUBLIC_BASE_URL"] ?? defaultPublicBaseURL
+            return HtmlShareConfig(
+                serverURL: serverURL,
+                publicBaseURL: publicBaseURL,
+                token: values["SHARE_TOKEN"] ?? defaultToken
+            )
         }
 
-        throw ShareError.message("Missing HtmlShare config. Expected client.env in the app bundle or ~/.htmlshare/client.env.")
+        return HtmlShareConfig(
+            serverURL: defaultServerURL,
+            publicBaseURL: defaultPublicBaseURL,
+            token: defaultToken
+        )
     }
 
     private static func parseEnv(_ text: String) -> [String: String] {

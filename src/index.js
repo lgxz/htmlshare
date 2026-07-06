@@ -19,6 +19,9 @@ const MAX_PENDING_PER_SHARE = positiveInt(process.env.HTMLSHARE_MAX_PENDING_PER_
 const CACHE_MAX_TOTAL_BYTES = nonNegativeInt(process.env.HTMLSHARE_CACHE_MAX_TOTAL_BYTES, 512 * 1024 * 1024);
 const DEFAULT_CACHE_MAX_ENTRIES = positiveInt(process.env.HTMLSHARE_CACHE_MAX_ENTRIES, 100);
 const DEFAULT_CACHE_MAX_BYTES = positiveInt(process.env.HTMLSHARE_CACHE_MAX_BYTES, 100 * 1024 * 1024);
+const DEFAULT_SERVER_URL = "wss://share.xxyy.eu.org/tunnel";
+const DEFAULT_PUBLIC_BASE_URL = "https://share.xxyy.eu.org";
+const DEFAULT_SHARE_TOKEN = "69a00c76d73257a4369f868d71ffdccaeb6391fcb6cc074b";
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -52,7 +55,7 @@ if (command === "server") {
 function usage() {
   console.log(`Usage:
   htmlshare server [--port 8080]
-  htmlshare client --server ws://localhost:8080/tunnel --file /path/to/file.html [--cache-ttl 10m]
+  htmlshare client --file /path/to/file.html [--server ws://localhost:8080/tunnel] [--cache-ttl 10m]
 
 Environment:
   HTMLSHARE_USERS_FILE     Required users.json path for server mode
@@ -694,9 +697,9 @@ function adminPageHtml() {
 }
 
 async function runClient() {
-  const serverUrl = readOption("--server") || process.env.HTMLSHARE_SERVER;
+  const serverUrl = readOption("--server") || process.env.HTMLSHARE_SERVER || DEFAULT_SERVER_URL;
   const fileArg = readOption("--file") || process.argv[3];
-  const shareToken = process.env.SHARE_TOKEN || "";
+  const shareToken = process.env.SHARE_TOKEN || DEFAULT_SHARE_TOKEN;
   const cacheTtlSeconds = parseDurationSeconds(readOption("--cache-ttl") || process.env.HTMLSHARE_CACHE_TTL || "0");
 
   if (!serverUrl || !fileArg) {
@@ -713,7 +716,7 @@ async function runClient() {
   const rootDir = await realpath(path.dirname(htmlFile));
   const entryName = path.basename(htmlFile);
   const sessionId = randomId(8);
-  const publicBaseUrl = process.env.PUBLIC_BASE_URL || serverUrl.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/tunnel$/, "");
+  const publicBaseUrl = process.env.PUBLIC_BASE_URL || (serverUrl === DEFAULT_SERVER_URL ? DEFAULT_PUBLIC_BASE_URL : serverUrl.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/tunnel$/, ""));
   const shareUrl = `${publicBaseUrl.replace(/\/$/, "")}/s/${sessionId}/${encodeURIComponent(entryName)}`;
 
   const ws = new WebSocket(serverUrl);
@@ -835,10 +838,11 @@ function effectiveCachePolicy(userCache, clientCache) {
   const clientEnabled = clientCache.enabled === true;
   const clientTtl = nonNegativeInt(clientCache.ttlSeconds, 0);
   const userTtl = nonNegativeInt(userCache.ttlSeconds, 0);
-  const maxEntries = positiveInt(userCache.maxEntries, DEFAULT_CACHE_MAX_ENTRIES);
-  const maxBytes = positiveInt(userCache.maxBytes, DEFAULT_CACHE_MAX_BYTES);
+  const userCacheEnabled = userCache.enabled === true;
+  const maxEntries = userCacheEnabled ? positiveInt(userCache.maxEntries, DEFAULT_CACHE_MAX_ENTRIES) : 0;
+  const maxBytes = userCacheEnabled ? positiveInt(userCache.maxBytes, DEFAULT_CACHE_MAX_BYTES) : 0;
   const ttlSeconds = Math.min(userTtl, clientTtl);
-  const enabled = userCache.enabled === true &&
+  const enabled = userCacheEnabled &&
     clientEnabled &&
     ttlSeconds > 0 &&
     maxEntries > 0 &&

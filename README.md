@@ -55,6 +55,18 @@ Edit `users.json`:
         "maxActiveShares": 5,
         "maxPendingPerShare": 10
       }
+    },
+    {
+      "name": "public",
+      "token": "69a00c76d73257a4369f868d71ffdccaeb6391fcb6cc074b",
+      "enabled": true,
+      "cache": {
+        "enabled": false
+      },
+      "limits": {
+        "maxActiveShares": 50,
+        "maxPendingPerShare": 3
+      }
     }
   ]
 }
@@ -175,7 +187,7 @@ The status response includes uptime, active shares, client IPs, per-share counte
 
 ## macOS App
 
-Create the local client config:
+The macOS app has a built-in default config for `https://share.xxyy.eu.org` using the no-cache `public` user token. Create a local config only when you want to override the server or use a private token:
 
 ```bash
 mkdir -p ~/.htmlshare
@@ -190,7 +202,7 @@ PUBLIC_BASE_URL=https://share.example.com
 SHARE_TOKEN=change-this-long-random-token
 ```
 
-`SHARE_TOKEN` is the token for one user in `users.json`. `HtmlShareSwift.app` reads this file at runtime. Changing the server URL or token only requires editing `~/.htmlshare/client.env` and restarting the app; rebuilding is not required.
+`SHARE_TOKEN` is the token for one user in `users.json`. The built-in token belongs to the `public` user and has no cache permission. `HtmlShareSwift.app` prefers this file at runtime, so changing the server URL or token only requires editing `~/.htmlshare/client.env` and restarting the app; rebuilding is not required.
 
 Build the app:
 
@@ -272,9 +284,10 @@ Open the printed URL.
 - Only the selected HTML file's directory is shared.
 - Paths cannot escape that directory.
 - Default max single-file response is 10MB. Override with `HTMLSHARE_MAX_FILE_BYTES`.
-- The app prefers `~/.htmlshare/client.env` at runtime. A bundled `client.env` is only a fallback.
+- The app and Go CLI include a default no-cache public token for `share.xxyy.eu.org`.
+- The app prefers `~/.htmlshare/client.env` at runtime. A bundled `client.env` or built-in defaults are fallbacks.
 - The native macOS app and Go CLI show visitor records, including IP, browser, and OS.
-- Server authentication uses `users.json`; client config still uses `SHARE_TOKEN` for the selected user's token.
+- Server authentication uses `users.json`; client config can still use `SHARE_TOKEN` to select a private or cache-enabled user.
 - Cache defaults to off per share. Swift and Go clients can request a TTL, capped by `users.json`.
 - To implement another platform client, see `docs/client-protocol.md`.
 - Server events are written to `HTMLSHARE_EVENT_LOG` as JSONL by default.
