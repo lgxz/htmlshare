@@ -564,7 +564,7 @@ function adminPageHtml() {
 
     async function api(path, options) {
       const headers = options && options.method === "POST" ? { "x-admin-action": "1" } : {};
-      const response = await fetch(path, { cache: "no-store", ...options, headers: { ...headers, ...(options?.headers || {}) } });
+      const response = await fetch(path, { cache: "no-store", credentials: "same-origin", ...options, headers: { ...headers, ...(options?.headers || {}) } });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || payload.ok === false) throw new Error(payload.error || response.statusText);
       return payload;
