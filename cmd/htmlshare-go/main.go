@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"mime"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -32,6 +36,9 @@ type config struct {
 	publicBaseURL string
 	token         string
 	filePath      string
+	dirPath       string
+	entry         string
+	slug          string
 	cacheTTL      int
 }
 
@@ -80,6 +87,30 @@ type responseMessage struct {
 	Error       string `json:"error,omitempty"`
 }
 
+type publishRequest struct {
+	Slug  string        `json:"slug"`
+	Entry string        `json:"entry"`
+	Files []publishFile `json:"files"`
+}
+
+type publishFile struct {
+	Path        string `json:"path"`
+	ContentType string `json:"contentType"`
+	SHA256      string `json:"sha256"`
+	Size        int    `json:"size"`
+	Body        string `json:"body"`
+}
+
+type publishResponse struct {
+	OK    bool   `json:"ok"`
+	Slug  string `json:"slug"`
+	Entry string `json:"entry"`
+	Files int    `json:"files"`
+	Bytes int    `json:"bytes"`
+	URL   string `json:"url"`
+	Error string `json:"error"`
+}
+
 type userAgentInfo struct {
 	Browser string
 	OS      string
@@ -89,7 +120,20 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := loadConfig()
+	if len(os.Args) > 1 && os.Args[1] == "publish" {
+		cfg, err := loadPublishConfig(os.Args[2:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(64)
+		}
+		if err := runPublish(ctx, cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	cfg, err := loadConfig(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(64)
@@ -101,7 +145,7 @@ func main() {
 	}
 }
 
-func loadConfig() (config, error) {
+func loadConfig(args []string) (config, error) {
 	env := readClientEnv()
 
 	defaultServer := firstNonEmpty(os.Getenv("HTMLSHARE_SERVER"), env["HTMLSHARE_SERVER"], defaultServerURL)
@@ -110,15 +154,18 @@ func loadConfig() (config, error) {
 
 	cfg := config{}
 	cacheTTL := ""
-	flag.StringVar(&cfg.serverURL, "server", defaultServer, "WebSocket relay URL, e.g. wss://share.example.com/tunnel")
-	flag.StringVar(&cfg.publicBaseURL, "public-base-url", defaultPublicBase, "Public HTTP base URL, e.g. https://share.example.com")
-	flag.StringVar(&cfg.token, "token", defaultToken, "Share token")
-	flag.StringVar(&cfg.filePath, "file", "", "HTML file to share")
-	flag.StringVar(&cacheTTL, "cache-ttl", "0", "Request server cache TTL for this share, e.g. 10m, 1d, 1w; 0 disables cache")
-	flag.Parse()
+	flags := flag.NewFlagSet("htmlshare-go", flag.ContinueOnError)
+	flags.StringVar(&cfg.serverURL, "server", defaultServer, "WebSocket relay URL, e.g. wss://share.example.com/tunnel")
+	flags.StringVar(&cfg.publicBaseURL, "public-base-url", defaultPublicBase, "Public HTTP base URL, e.g. https://share.example.com")
+	flags.StringVar(&cfg.token, "token", defaultToken, "Share token")
+	flags.StringVar(&cfg.filePath, "file", "", "HTML file to share")
+	flags.StringVar(&cacheTTL, "cache-ttl", "0", "Request server cache TTL for this share, e.g. 10m, 1d, 1w; 0 disables cache")
+	if err := flags.Parse(args); err != nil {
+		return cfg, err
+	}
 
-	if cfg.filePath == "" && flag.NArg() > 0 {
-		cfg.filePath = flag.Arg(0)
+	if cfg.filePath == "" && flags.NArg() > 0 {
+		cfg.filePath = flags.Arg(0)
 	}
 	if cfg.serverURL == "" {
 		return cfg, errors.New("missing server URL: set HTMLSHARE_SERVER or pass --server")
@@ -134,6 +181,49 @@ func loadConfig() (config, error) {
 		return cfg, err
 	}
 	cfg.cacheTTL = ttlSeconds
+	return cfg, nil
+}
+
+func loadPublishConfig(args []string) (config, error) {
+	env := readClientEnv()
+
+	defaultServer := firstNonEmpty(os.Getenv("HTMLSHARE_SERVER"), env["HTMLSHARE_SERVER"], defaultServerURL)
+	defaultPublicBase := firstNonEmpty(os.Getenv("PUBLIC_BASE_URL"), env["PUBLIC_BASE_URL"], publicBaseFromServer(defaultServer), defaultPublicBaseURL)
+	defaultToken := firstNonEmpty(os.Getenv("SHARE_TOKEN"), env["SHARE_TOKEN"], defaultShareToken)
+
+	cfg := config{
+		serverURL:     defaultServer,
+		publicBaseURL: defaultPublicBase,
+		token:         defaultToken,
+		entry:         "index.html",
+	}
+	flags := flag.NewFlagSet("htmlshare-go publish", flag.ContinueOnError)
+	flags.StringVar(&cfg.serverURL, "server", cfg.serverURL, "WebSocket relay URL used to infer public base URL")
+	flags.StringVar(&cfg.publicBaseURL, "public-base-url", cfg.publicBaseURL, "Public HTTP base URL, e.g. https://share.example.com")
+	flags.StringVar(&cfg.token, "token", cfg.token, "Share token")
+	flags.StringVar(&cfg.filePath, "file", "", "Entry HTML file to publish")
+	flags.StringVar(&cfg.dirPath, "dir", "", "Directory to publish")
+	flags.StringVar(&cfg.entry, "entry", cfg.entry, "Entry file inside --dir")
+	flags.StringVar(&cfg.slug, "slug", "", "Permanent publish slug")
+	if err := flags.Parse(args); err != nil {
+		return cfg, err
+	}
+
+	if cfg.slug == "" {
+		return cfg, errors.New("missing slug: pass --slug demo")
+	}
+	if cfg.filePath == "" && cfg.dirPath == "" {
+		return cfg, errors.New("missing publish source: pass --file /path/to/index.html or --dir /path/to/site")
+	}
+	if cfg.filePath != "" && cfg.dirPath != "" {
+		return cfg, errors.New("pass only one of --file or --dir")
+	}
+	if cfg.publicBaseURL == "" {
+		return cfg, errors.New("missing public base URL: set PUBLIC_BASE_URL or pass --public-base-url")
+	}
+	if cfg.token == "" {
+		return cfg, errors.New("missing share token: set SHARE_TOKEN or pass --token")
+	}
 	return cfg, nil
 }
 
@@ -214,6 +304,183 @@ func run(ctx context.Context, cfg config) error {
 			printVisit(message, response)
 		}
 	}
+}
+
+func runPublish(ctx context.Context, cfg config) error {
+	rootDir, entry, err := publishRootAndEntry(cfg)
+	if err != nil {
+		return err
+	}
+
+	files, err := collectPublishFiles(rootDir)
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return errors.New("publish directory has no files")
+	}
+	if !hasPublishEntry(files, entry) {
+		return fmt.Errorf("entry file is missing from publish directory: %s", entry)
+	}
+
+	requestPayload := publishRequest{
+		Slug:  cfg.slug,
+		Entry: entry,
+		Files: files,
+	}
+	body, err := json.Marshal(requestPayload)
+	if err != nil {
+		return err
+	}
+
+	endpoint := strings.TrimRight(cfg.publicBaseURL, "/") + "/api/publish"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var publishResp publishResponse
+	if err := json.NewDecoder(resp.Body).Decode(&publishResp); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !publishResp.OK {
+		if publishResp.Error != "" {
+			return errors.New(publishResp.Error)
+		}
+		return fmt.Errorf("publish failed with HTTP %d", resp.StatusCode)
+	}
+
+	publishedURL := strings.TrimRight(cfg.publicBaseURL, "/") + firstNonEmpty(publishResp.URL, "/p/"+cfg.slug+"/")
+	fmt.Println("Published URL:")
+	fmt.Println(publishedURL)
+	fmt.Printf("Files: %d\n", publishResp.Files)
+	fmt.Printf("Bytes: %d\n", publishResp.Bytes)
+	return nil
+}
+
+func publishRootAndEntry(cfg config) (string, string, error) {
+	if cfg.filePath != "" {
+		filePath, err := filepath.EvalSymlinks(cfg.filePath)
+		if err != nil {
+			return "", "", err
+		}
+		info, err := os.Stat(filePath)
+		if err != nil {
+			return "", "", err
+		}
+		if !info.Mode().IsRegular() {
+			return "", "", fmt.Errorf("not a file: %s", filePath)
+		}
+		rootDir, err := filepath.EvalSymlinks(filepath.Dir(filePath))
+		if err != nil {
+			return "", "", err
+		}
+		return rootDir, filepath.Base(filePath), nil
+	}
+
+	rootDir, err := filepath.EvalSymlinks(cfg.dirPath)
+	if err != nil {
+		return "", "", err
+	}
+	info, err := os.Stat(rootDir)
+	if err != nil {
+		return "", "", err
+	}
+	if !info.IsDir() {
+		return "", "", fmt.Errorf("not a directory: %s", rootDir)
+	}
+	entry := filepath.ToSlash(filepath.Clean(cfg.entry))
+	if entry == "." || strings.HasPrefix(entry, "../") || strings.HasPrefix(entry, "/") {
+		return "", "", fmt.Errorf("invalid entry path: %s", cfg.entry)
+	}
+	return rootDir, entry, nil
+}
+
+func collectPublishFiles(rootDir string) ([]publishFile, error) {
+	resolvedRoot, err := filepath.EvalSymlinks(rootDir)
+	if err != nil {
+		return nil, err
+	}
+	files := []publishFile{}
+	err = filepath.WalkDir(resolvedRoot, func(pathValue string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Name() == ".DS_Store" {
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			resolvedPath, err := filepath.EvalSymlinks(pathValue)
+			if err != nil {
+				return err
+			}
+			if !isInsideRoot(resolvedRoot, resolvedPath) {
+				return fmt.Errorf("refusing to publish file outside directory: %s", pathValue)
+			}
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		resolvedPath, err := filepath.EvalSymlinks(pathValue)
+		if err != nil {
+			return err
+		}
+		if !isInsideRoot(resolvedRoot, resolvedPath) {
+			return fmt.Errorf("refusing to publish file outside directory: %s", pathValue)
+		}
+		data, err := os.ReadFile(resolvedPath)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(resolvedRoot, resolvedPath)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		sum := sha256.Sum256(data)
+		files = append(files, publishFile{
+			Path:        relative,
+			ContentType: contentType(resolvedPath),
+			SHA256:      hex.EncodeToString(sum[:]),
+			Size:        len(data),
+			Body:        base64.StdEncoding.EncodeToString(data),
+		})
+		return nil
+	})
+	return files, err
+}
+
+func isInsideRoot(rootDir, candidate string) bool {
+	rootWithSep := rootDir
+	if !strings.HasSuffix(rootWithSep, string(filepath.Separator)) {
+		rootWithSep += string(filepath.Separator)
+	}
+	return candidate == rootDir || strings.HasPrefix(candidate, rootWithSep)
+}
+
+func hasPublishEntry(files []publishFile, entry string) bool {
+	for _, file := range files {
+		if file.Path == entry {
+			return true
+		}
+	}
+	return false
 }
 
 func handleFileRequest(rootDir, requestID, requestPath string) responseMessage {

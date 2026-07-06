@@ -13,6 +13,13 @@
       "limits": {
         "maxActiveShares": 5,
         "maxPendingPerShare": 10
+      },
+      "publish": {
+        "enabled": true,
+        "allowedSlugs": ["demo", "portfolio"],
+        "maxFiles": 200,
+        "maxBytes": 104857600,
+        "maxFileBytes": 10485760
       }
     },
     {

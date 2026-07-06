@@ -34,6 +34,10 @@ HTMLSHARE_MAX_PENDING_PER_SHARE=10
 HTMLSHARE_CACHE_MAX_TOTAL_BYTES=536870912
 HTMLSHARE_CACHE_MAX_ENTRIES=100
 HTMLSHARE_CACHE_MAX_BYTES=104857600
+HTMLSHARE_PUBLISHED_DIR=/data/published
+HTMLSHARE_PUBLISH_MAX_FILES=200
+HTMLSHARE_PUBLISH_MAX_BYTES=104857600
+HTMLSHARE_PUBLISH_MAX_FILE_BYTES=10485760
 ```
 
 Edit `users.json`:
@@ -54,6 +58,13 @@ Edit `users.json`:
       "limits": {
         "maxActiveShares": 5,
         "maxPendingPerShare": 10
+      },
+      "publish": {
+        "enabled": true,
+        "allowedSlugs": ["demo", "portfolio"],
+        "maxFiles": 200,
+        "maxBytes": 104857600,
+        "maxFileBytes": 10485760
       }
     },
     {
@@ -95,6 +106,26 @@ docker compose exec htmlshare tail -f /data/events.jsonl
 The event recorder is isolated behind `record(event)` in `src/index.js`, so the JSONL storage can be replaced by SQLite later without changing request/session handling.
 
 Users are configured in `users.json`. Each token has its own active-share, per-share pending-request, and cache limits.
+
+Permanent publish permissions are also configured per user. A publish-enabled token can upload a static snapshot to a fixed slug:
+
+```bash
+htmlshare publish --file /path/to/index.html --slug demo
+```
+
+or publish a whole directory:
+
+```bash
+htmlshare publish --dir /path/to/site --entry index.html --slug demo
+```
+
+The published site is served directly from server disk at:
+
+```text
+https://share.example.com/p/demo/
+```
+
+`publish.allowedSlugs` restricts which permanent links a token can update. Use an empty array to allow any valid slug for that user. Published files are stored under `HTMLSHARE_PUBLISHED_DIR`, defaulting to `data/published` locally and `/data/published` in the Docker example above.
 
 Cache policy is a permission upper bound. Clients still choose whether a specific share requests cache and for how long. The server uses the stricter result and returns the effective cache policy when the share is registered.
 
@@ -233,6 +264,12 @@ Run from source:
 go run ./cmd/htmlshare-go --file /path/to/file.html --cache-ttl 1d
 ```
 
+Publish a permanent link:
+
+```bash
+go run ./cmd/htmlshare-go publish --dir /path/to/site --entry index.html --slug demo
+```
+
 Build a local binary:
 
 ```bash
@@ -275,6 +312,12 @@ Go client:
 
 ```bash
 HTMLSHARE_SERVER=ws://localhost:8080/tunnel PUBLIC_BASE_URL=http://localhost:8080 SHARE_TOKEN=change-this-long-random-token go run ./cmd/htmlshare-go --file /path/to/file.html --cache-ttl 1d
+```
+
+Go publish:
+
+```bash
+PUBLIC_BASE_URL=http://localhost:8080 SHARE_TOKEN=change-this-long-random-token go run ./cmd/htmlshare-go publish --dir /path/to/site --entry index.html --slug demo
 ```
 
 Open the printed URL.
