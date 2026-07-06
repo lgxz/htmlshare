@@ -5,8 +5,8 @@ Private one-off HTML sharing through a single HTTPS relay.
 ## Shape
 
 - Server: Docker Compose on a VPS, exposed on `443`.
-- Client: native macOS Swift app.
-- Sharing ends when the app window is closed or `Stop` is clicked.
+- Clients: native macOS Swift app, Go CLI, and a Node development client.
+- Sharing connection ends when the app window is closed, the CLI is interrupted, or `Stop` is clicked. `Stop` also asks the relay to clear cached files for that share; ordinary disconnects leave cache entries available until TTL expiry.
 
 ## Server
 
@@ -202,7 +202,7 @@ PUBLIC_BASE_URL=https://share.example.com
 SHARE_TOKEN=change-this-long-random-token
 ```
 
-`SHARE_TOKEN` is the token for one user in `users.json`. The built-in token belongs to the `public` user and has no cache permission. `HtmlShareSwift.app` prefers this file at runtime, so changing the server URL or token only requires editing `~/.htmlshare/client.env` and restarting the app; rebuilding is not required.
+`SHARE_TOKEN` is the token for one user in `users.json`. The built-in token belongs to the `public` user and has no cache permission, so cache duration choices only take effect after switching to a cache-enabled token. `HtmlShareSwift.app` prefers this file at runtime, so changing the server URL or token only requires editing `~/.htmlshare/client.env` and restarting the app; rebuilding is not required.
 
 Build the app:
 
@@ -225,7 +225,7 @@ ditto -c -k --sequesterRsrc --keepParent HtmlShareSwift.app HtmlShareSwift-macos
 
 ## Go CLI
 
-The Go CLI uses the same `~/.htmlshare/client.env` config as the macOS app and prints each visit with IP, browser, OS, status, bytes, and path. Interrupting the CLI disconnects the client; any cached files remain available until their TTL expires.
+The Go CLI uses the same built-in defaults and optional `~/.htmlshare/client.env` config as the macOS app. It prints each visit with IP, browser, OS, status, bytes, and path. Interrupting the CLI disconnects the client; any cached files remain available until their TTL expires.
 
 Run from source:
 
@@ -250,7 +250,7 @@ GOOS=darwin GOARCH=arm64 go build -o dist/htmlshare-go-macos-arm64 ./cmd/htmlsha
 ## Use
 
 1. Open `HtmlShareSwift.app`.
-2. Optional: choose a cache duration, from minutes up to one week.
+2. Optional: choose a cache duration, from minutes up to one week. This requires a cache-enabled token; the built-in `public` token is no-cache.
 3. Click `Choose File`.
 4. Select an `.html` or `.htm` file.
 5. The share URL is displayed and copied to the clipboard.
@@ -284,7 +284,7 @@ Open the printed URL.
 - Only the selected HTML file's directory is shared.
 - Paths cannot escape that directory.
 - Default max single-file response is 10MB. Override with `HTMLSHARE_MAX_FILE_BYTES`.
-- The app and Go CLI include a default no-cache public token for `share.xxyy.eu.org`.
+- The macOS app, Go CLI, and Node client include a default no-cache public token for `share.xxyy.eu.org`.
 - The app prefers `~/.htmlshare/client.env` at runtime. A bundled `client.env` or built-in defaults are fallbacks.
 - The native macOS app and Go CLI show visitor records, including IP, browser, and OS.
 - Server authentication uses `users.json`; client config can still use `SHARE_TOKEN` to select a private or cache-enabled user.
