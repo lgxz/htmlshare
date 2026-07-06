@@ -2,11 +2,13 @@
 
 This document describes how to implement a HtmlShare client in any language or platform.
 
-The existing macOS app is only one client implementation. A Windows, Linux, iOS, Android, CLI, or browser-extension companion can use the same relay protocol.
+The existing macOS app is only one client implementation. A Windows, Linux, iOS, Android, CLI, or browser-extension companion can use the same protocols.
 
 ## Overview
 
-The client shares one local HTML file's containing directory through the relay.
+HtmlShare supports two client modes.
+
+Temporary sharing keeps a client connected through the relay:
 
 ```text
 local client
@@ -22,6 +24,19 @@ browser
 ```
 
 The relay only listens on normal HTTPS/WSS. The client initiates the outbound connection, so it does not need a public IP or inbound port.
+
+Permanent publishing uploads a static snapshot to server disk:
+
+```text
+local client
+  -> scans a directory
+  -> POSTs manifest + base64 file bytes to /api/publish
+  -> receives a fixed public URL
+
+browser
+  -> GET https://share.example.com/p/<slug>/<path>
+  -> relay serves the file directly from disk
+```
 
 ## Configuration
 
@@ -39,9 +54,13 @@ SHARE_TOKEN=shared-secret-token
 
 `SHARE_TOKEN` is sent when registering. The relay matches it against a user token in `users.json`; clients with unknown or disabled tokens are rejected.
 
+For publishing, the same `SHARE_TOKEN` is sent as an HTTP bearer token. The relay accepts it only when the matching user has publish permission.
+
 The first-party macOS app, Go CLI, and Node client include built-in defaults for `https://share.xxyy.eu.org` using the no-cache `public` user token. A third-party client can do the same only if that token is present in the target relay's `users.json`. Local config and environment variables should override built-in defaults.
 
-## Session ID
+## Temporary Share URLs
+
+### Session ID
 
 Generate a random URL-safe session id for every share.
 
@@ -63,7 +82,7 @@ Example:
 https://share.example.com/s/XMKjEa6GLXk/travel-guide.html
 ```
 
-## WebSocket Registration
+### WebSocket Registration
 
 Connect to:
 
@@ -129,7 +148,7 @@ To explicitly stop a share and ask the relay to clear any cached files for that 
 
 The relay closes the WebSocket after processing the stop message. If the client simply disconnects or exits without sending `stop`, cached files can continue to be served until their TTL expires.
 
-## Request Message
+### Request Message
 
 When a browser requests a shared file, the relay sends this message to the connected client:
 
@@ -159,7 +178,7 @@ Fields:
 - `visitor.referer`: browser `Referer` header, or an empty string.
 - `visitor.at`: relay receive time in ISO 8601 format.
 
-## Response Message
+### Response Message
 
 For success:
 
@@ -197,6 +216,109 @@ Fields:
 
 For browser `HEAD` requests, the relay forwards a `HEAD` request message to the client and does not send a response body to the browser. A client may either send `size` only or reuse its normal `GET` response shape; the relay ignores the body for `HEAD`.
 
+## Permanent Publish
+
+Publishing creates or replaces a fixed URL:
+
+```text
+<PUBLIC_BASE_URL>/p/<slug>/
+```
+
+Example:
+
+```text
+https://share.example.com/p/demo/
+```
+
+`slug` is the permanent URL name. `entry` is the default file returned when a browser requests `/p/<slug>/`.
+
+### Publish Request
+
+Send:
+
+```http
+POST /api/publish
+Authorization: Bearer shared-secret-token
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "slug": "demo",
+  "entry": "index.html",
+  "files": [
+    {
+      "path": "index.html",
+      "contentType": "text/html; charset=utf-8",
+      "sha256": "7a38...",
+      "size": 12345,
+      "body": "PGh0bWw+Li4uPC9odG1sPg=="
+    },
+    {
+      "path": "assets/app.css",
+      "contentType": "text/css; charset=utf-8",
+      "sha256": "95d0...",
+      "size": 456,
+      "body": "aDF7Y29sb3I6IzI0NX0="
+    }
+  ]
+}
+```
+
+Fields:
+
+- `slug`: fixed public name. Current server accepts lowercase letters, numbers, and hyphens, beginning with a lowercase letter or number.
+- `entry`: relative path to the default file for `/p/<slug>/`; it must be present in `files`.
+- `files`: uploaded static snapshot.
+- `files[].path`: slash-separated relative path inside the published site.
+- `files[].contentType`: MIME type returned when serving this file.
+- `files[].sha256`: lowercase hex SHA-256 of decoded file bytes.
+- `files[].size`: decoded byte length.
+- `files[].body`: base64-encoded file bytes.
+
+The server validates token permissions, allowed slugs, file count, total bytes, per-file bytes, path safety, `entry`, `size`, and `sha256`.
+
+### Publish Response
+
+For success:
+
+```json
+{
+  "ok": true,
+  "slug": "demo",
+  "entry": "index.html",
+  "files": 2,
+  "bytes": 12801,
+  "url": "/p/demo/"
+}
+```
+
+For errors:
+
+```json
+{
+  "ok": false,
+  "error": "Slug is not allowed for this user"
+}
+```
+
+Clients should treat non-2xx HTTP status codes or `"ok": false` as failure.
+
+### Published File Serving
+
+Browsers can request:
+
+```text
+GET  /p/<slug>/
+HEAD /p/<slug>/
+GET  /p/<slug>/<path>
+HEAD /p/<slug>/<path>
+```
+
+When `<path>` is omitted, the server serves the published `entry`. Published HTML uses `Cache-Control: no-cache`; other static assets use a long immutable cache header.
+
 ## File Resolution Rules
 
 A safe client should:
@@ -210,6 +332,16 @@ A safe client should:
 7. Return `413` for files larger than the client limit.
 
 The current implementations use a 10MB single-file limit by default.
+
+A safe publish client should:
+
+1. Publish the selected entry file's containing directory or an explicitly selected directory.
+2. Use slash-separated relative paths in `files[].path`.
+3. Reject absolute paths, empty paths, `..` paths, and NUL bytes.
+4. Resolve symlinks if the platform supports it.
+5. Reject any symlink or file path that escapes the published directory.
+6. Include only regular files.
+7. Compute `sha256` and `size` from the exact decoded bytes in `body`.
 
 ## MIME Types
 
@@ -263,7 +395,7 @@ Disconnect without purging when:
 - The app window closes.
 - The app exits.
 
-## Minimal Pseudocode
+## Minimal Temporary Share Pseudocode
 
 ```text
 config = read_config()
@@ -304,6 +436,44 @@ while message = ws.receive_json():
       })
 ```
 
+## Minimal Publish Pseudocode
+
+```text
+config = read_config()
+root = choose_site_directory()
+slug = choose_slug()
+entry = choose_entry_file_or_default("index.html")
+files = []
+
+for file in walk(root):
+  if file is not a regular file:
+    continue
+  resolved = resolve_symlinks(file)
+  if resolved escapes root:
+    fail()
+  bytes = read_file(resolved)
+  files.append({
+    path: relative_slash_path(root, resolved),
+    contentType: mime_type(resolved),
+    sha256: hex_sha256(bytes),
+    size: len(bytes),
+    body: base64(bytes)
+  })
+
+response = http_post_json(config.PUBLIC_BASE_URL + "/api/publish", {
+  slug: slug,
+  entry: entry,
+  files: files
+}, headers = {
+  Authorization: "Bearer " + config.SHARE_TOKEN
+})
+
+if response.ok:
+  show(config.PUBLIC_BASE_URL + response.url)
+else:
+  show_error(response.error)
+```
+
 ## Current Limitations
 
 - Responses are buffered into JSON, so large files are inefficient.
@@ -311,5 +481,6 @@ while message = ws.receive_json():
 - There is no range request support.
 - One session id maps to one connected client.
 - If the client disconnects, cached `GET` responses can remain available until TTL expiry. Uncached paths return `410 This share is not connected.`
+- Publish uploads are single JSON requests, so large sites are inefficient.
 
-Future protocol versions could add binary frames, streaming, range requests, and client-advertised capabilities.
+Future protocol versions could add binary frames, streaming, range requests, client-advertised capabilities, and resumable multi-step publishing.
